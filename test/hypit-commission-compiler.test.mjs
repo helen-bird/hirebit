@@ -202,8 +202,11 @@ test("commission compiler turns a bound reference analysis into six Hypit shots 
   const productPath = join(inputDir, "product.jpeg");
   const referencePath = join(inputDir, "reference.mp4");
   await Promise.all([
-    copyFile(join(rootDir, ".validation/reference-clone/input/product.jpeg"), productPath),
-    copyFile(join(rootDir, ".validation/reference-clone/input/reference.mp4"), referencePath),
+    copyFile(join(rootDir, "product_pic.jpeg"), productPath),
+    execFileAsync(ffmpegStatic, [
+      "-nostdin", "-y", "-f", "lavfi", "-i", "testsrc2=size=90x160:rate=10",
+      "-t", "12.6", "-c:v", "libx264", "-pix_fmt", "yuv420p", referencePath,
+    ]),
   ]);
   const productBytes = await readFile(productPath);
   const referenceBytes = await readFile(referencePath);
@@ -229,7 +232,32 @@ test("commission compiler turns a bound reference analysis into six Hypit shots 
   };
   await writeFile(input.commissionPath, `${JSON.stringify({ order: input.order, quote: input.quote, localAssets }, null, 2)}\n`, { mode: 0o600 });
   const commissionSha256 = createHash("sha256").update(await readFile(input.commissionPath)).digest("hex");
-  const cachedAnalysis = JSON.parse(await readFile(join(rootDir, ".validation/reference-clone/evidence/vision-plan.json"), "utf8"));
+  // Schema-valid synthetic model output; no private cached provider response or social footage.
+  const plan = {
+    product: {
+      category: "cotton swabs",
+      observedFeatures: ["clear round tub", "white cotton tips"],
+      visibleUses: ["small-area detailing"],
+      uncertainty: "Material specifications are not verified.",
+    },
+    reference: {
+      visualGrammar: "Detail opening, process phase, reveal and close.",
+      pacing: "moderate", transitionMoment: 0.58,
+      typography: "Short high-contrast statements.",
+    },
+    adaptation: {
+      strategy: "Compose product crops with six distinct motion beats.",
+      palette: ["#f1e7df", "#9d2878", "#fff4cb"],
+      narration: "Look closer at a detail tool for your routine.",
+      shots: Array.from({ length: 6 }, (_, index) => ({
+        durationWeight: 1, focusX: 0.5, focusY: 0.5, cropScale: 1.2,
+        motion: ["punch", "drift_left", "drift_right", "slow_zoom", "reveal", "reveal"][index],
+        copy: ["LOOK CLOSER", "DOUBLE ENDED", "SMALL DETAILS", "REFINE THE EDGES", "TIDY THE FINISH", "EXPLORE THE PRODUCT"][index],
+        copyPlacement: "bottom",
+        emphasis: ["hook", "feature", "action", "action", "proof", "cta"][index],
+      })),
+    },
+  };
   const referenceAdaptation = {
     format: "seller.reference-vision-plan@1",
     orderId: input.order.id,
@@ -238,14 +266,14 @@ test("commission compiler turns a bound reference analysis into six Hypit shots 
     manifestSha256: "2".repeat(64),
     inputs: { productSha256, referenceSha256 },
     source: {
-      durationSeconds: 12.606,
-      frameRate: 60,
-      boundaryTimes: [0, 2.362, 5.513, 7.25, 10.667, 12.606],
+      durationSeconds: 12.6,
+      frameRate: 10,
+      boundaryTimes: [0, 2.362, 5.513, 7.25, 10.667, 12.6],
     },
-    sampling: cachedAnalysis.sampling,
+    sampling: [0.5, 2, 4, 6, 8, 10, 11, 12],
     provider: "test-vision",
-    model: "cached-validation-plan",
-    plan: cachedAnalysis.plan,
+    model: "synthetic-plan",
+    plan,
   };
 
   const manifest = await compileCommissionProject({ rootDir, ...input, referenceAdaptation });
