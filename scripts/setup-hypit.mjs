@@ -24,4 +24,4 @@ if (!alreadyApplied) run(["apply", "--check", patch], hypit);
 if (!alreadyApplied) run(["apply", patch], hypit);
 
 console.log(`Hypit is pinned to ${commit} and the TikTok downloader patch is applied.`);
-console.log("Install its dependencies with: corepack pnpm --dir vendor/hypit install --frozen-lockfile");
+console.log("Install its dependencies with: (cd vendor/hypit && corepack pnpm install --frozen-lockfile)");

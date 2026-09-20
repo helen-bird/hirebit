@@ -98,7 +98,7 @@ git clone --recurse-submodules https://github.com/helen-bird/hirebit.git
 cd hirebit
 npm ci
 npm run hypit:setup
-corepack pnpm --dir vendor/hypit install --frozen-lockfile
+(cd vendor/hypit && corepack pnpm install --frozen-lockfile)
 cp .env.example .env
 ```
 
