@@ -1,5 +1,7 @@
 # Hirebit
 
+> Hackathon Demo — a working product prototype for delegated, safety-bounded video commerce.
+
 Hirebit is a safety-bounded agentic marketplace for commissioning product-marketing videos. A
 customer describes the outcome, supplies a product image and optionally a TikTok, Instagram or
 YouTube reference, then delegates the job to a Buyer agent. The Buyer clarifies missing facts,
