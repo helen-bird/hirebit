@@ -1,0 +1,3 @@
+[submodule "vendor/hypit"]
+	path = vendor/hypit
+	url = https://github.com/hypit-ai/hypit.git

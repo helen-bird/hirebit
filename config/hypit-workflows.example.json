@@ -1,0 +1,30 @@
+{
+  "ranking_listicle": {
+    "readyForSale": false,
+    "maxProviderCostSats": 900,
+    "providerTermsConfirmedAt": "2026-09-18T00:00:00Z",
+    "projectDir": "productions/demo-ranking",
+    "workspace": "productions/demo-ranking",
+    "run": "build.svrun",
+    "runtime": "hypit.runtime.json",
+    "runtimeDataDir": "hypit-runtime/ranking-listicle",
+    "compiler": "commission-v1",
+    "productionInputs": { "enabled": true, "copyProvider": "deepseek", "voiceProvider": "google-cloud-tts" },
+    "productionAssets": {
+      "look": "productions/look.svs",
+      "product": "productions/demo-ranking/assets/product.jpg",
+      "presenter": "productions/demo-ranking/assets/presenter.png",
+      "audio": ["productions/demo-ranking/assets/narration.wav"]
+    },
+    "commissionReceiptOutput": "commission-receipt",
+    "environment": [],
+    "deliverables": [
+      {
+        "output": "final.video",
+        "filename": "final.mp4",
+        "mediaType": "video/mp4",
+        "specification": { "hookIndex": 1, "language": "en-US", "aspectRatio": "9:16" }
+      }
+    ]
+  }
+}

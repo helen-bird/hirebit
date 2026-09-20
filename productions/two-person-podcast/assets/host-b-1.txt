@@ -1,0 +1,1 @@
+The familiar shape is the point. Underneath it, you get a thirty-two-bit RA4M1 and an ESP32-S3 for wireless connectivity.

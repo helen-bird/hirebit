@@ -1,0 +1,45 @@
+{
+  "brand": {
+    "name": "Arduino",
+    "product": "Arduino UNO R4 WiFi",
+    "officialProductUrl": "https://store.arduino.cc/products/uno-r4-wifi",
+    "officialDocsUrl": "https://docs.arduino.cc/hardware/uno-r4-wifi",
+    "referenceVideoUrl": "https://www.youtube.com/watch?v=XWrAjvwHOr8",
+    "disclaimer": "Unofficial hackathon demo; no endorsement implied."
+  },
+  "packages": {
+    "creator_pitch": {
+      "language": "en-US",
+      "voice": "Warm, confident female maker; conversational American English; medium-fast pace.",
+      "person": "Fictional East Asian woman, late twenties, credible product educator in a bright maker workshop.",
+      "objective": "Creator-led launch pitch for curious first-time and returning makers.",
+      "hook": "Your next idea can start on one board."
+    },
+    "proof_demo": {
+      "language": "zh-CN",
+      "voice": "Clear, calm female technical narrator; Mandarin; measured proof-first delivery.",
+      "person": "No on-screen person; the product and three verifiable hardware facts are the evidence.",
+      "objective": "Demonstrate concrete product capabilities without unsupported performance claims.",
+      "hook": "一块板，三个可验证升级。"
+    },
+    "ranking_listicle": {
+      "language": "es-US",
+      "voice": "Energetic, credible US-Spanish tech reviewer; quick listicle cadence.",
+      "person": "Fictional Latino male maker, early thirties, expressive engineer-creator.",
+      "objective": "Rank three reasons to consider the board for a next maker project.",
+      "hook": "Tres razones. La número uno está en la placa."
+    },
+    "two_person_podcast": {
+      "language": "en-GB",
+      "voice": "Two distinct voices: thoughtful Black British female engineer and curious British male product host.",
+      "person": "Two fictional adult hosts in a maker-lab podcast studio; balanced peer discussion.",
+      "objective": "Handle the objection that the product is only a minor refresh.",
+      "hook": "Is this really a new UNO, or just Wi-Fi added to the old idea?"
+    }
+  },
+  "imageGenerationPrompts": {
+    "creator": "Fictional East Asian female maker presenter in a bright modern workshop, teal overshirt, vertical medium shot, photorealistic, no text, logos, products, celebrities, or watermark.",
+    "ranking": "Fictional Latino male maker and energetic tech reviewer in an electronics lab, subject right of centre, vertical medium shot, photorealistic, no text, logos, products, celebrities, or watermark.",
+    "podcast": "Two fictional adult tech podcast hosts—a Black British woman and white European man—in a maker-lab studio, balanced vertical two-shot, photorealistic, no text, logos, branded products, celebrities, or watermark."
+  }
+}

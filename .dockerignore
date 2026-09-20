@@ -1,0 +1,11 @@
+*
+!.dockerignore
+!package.json
+!package-lock.json
+!docker/
+!docker/hypit-worker.Dockerfile
+!vendor/
+!vendor/hypit/
+vendor/hypit/.git
+vendor/hypit/node_modules
+vendor/hypit/.hypit

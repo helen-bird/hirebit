@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "sellerBaseUrl": "http://127.0.0.1:8787",
+  "allowedSellerOrigins": [
+    "http://127.0.0.1:8787"
+  ],
+  "allowedProducts": [
+    "creator_pitch",
+    "proof_demo",
+    "ranking_listicle",
+    "two_person_podcast"
+  ],
+  "maxPerOrderSats": 3000,
+  "maxCampaignSats": 3000,
+  "maxDailySpendSats": 6000,
+  "maxLifetimeSpendSats": 6000,
+  "maxPendingPayments": 1,
+  "maxPaymentFeeSats": 500,
+  "maxFeeRateSatVb": 50,
+  "paymentsEnabled": true,
+  "minimumDecisionScore": 0.35,
+  "defaultAutoExecute": false,
+  "decisionWeights": {
+    "objective": 0.55,
+    "quality": 0.15,
+    "cost": 0.15,
+    "speed": 0.15
+  },
+  "clarification": {
+    "maxQuestionsPerRound": 5,
+    "maxDynamicRounds": 3,
+    "maxDynamicQuestions": 15
+  },
+  "pollIntervalMs": 5000
+}

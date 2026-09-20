@@ -1,0 +1,121 @@
+{
+  "creator_pitch": {
+    "readyForSale": true,
+    "projectDir": "productions/creator-pitch",
+    "workspace": "productions",
+    "run": "runs/build.svrun",
+    "runtime": "../hypit.runtime.json",
+    "runtimeDataDir": "hypit-runtime/formal",
+    "compiler": "commission-v1",
+    "productionInputs": { "enabled": true, "copyProvider": "deepseek", "voiceProvider": "google-cloud-tts" },
+    "videoGeneration": { "enabled": true, "provider": "google-vertex-veo", "model": "veo-3.1-lite-generate-001", "customerImageOnly": true },
+    "productionAssets": {
+      "look": "productions/look.svs",
+      "product": "productions/shared-assets/arduino-uno-r4-wifi/product.jpg",
+      "presenter": "productions/shared-assets/arduino-uno-r4-wifi/fictional-creator-presenter.png",
+      "audio": ["productions/creator-pitch/assets/narration.wav"]
+    },
+    "commissionReceiptOutput": "commission-receipt",
+    "environment": [],
+    "maxProviderCostSats": 500,
+    "providerTermsConfirmedAt": "2026-09-20T11:38:20Z",
+    "deliverables": [
+      {
+        "output": "final.video",
+        "filename": "creator-pitch-h1-en-US-9x16.mp4",
+        "mediaType": "video/mp4",
+        "specification": { "hookIndex": 1, "language": "en-US", "aspectRatio": "9:16" }
+      }
+    ]
+  },
+  "proof_demo": {
+    "readyForSale": true,
+    "projectDir": "productions/proof-demo",
+    "workspace": "productions",
+    "run": "runs/build.svrun",
+    "runtime": "../hypit.runtime.json",
+    "runtimeDataDir": "hypit-runtime/formal",
+    "compiler": "commission-v1",
+    "productionInputs": { "enabled": true, "copyProvider": "deepseek", "voiceProvider": "google-cloud-tts" },
+    "referenceAdaptation": { "enabled": true, "provider": "deepseek-vision", "mode": "hypit-shot-plan" },
+    "videoGeneration": { "enabled": true, "provider": "google-vertex-veo", "model": "veo-3.1-lite-generate-001", "customerImageOnly": true },
+    "productionAssets": {
+      "look": "productions/look.svs",
+      "product": "productions/shared-assets/arduino-uno-r4-wifi/product.jpg",
+      "audio": ["productions/proof-demo/assets/narration.wav"]
+    },
+    "commissionReceiptOutput": "commission-receipt",
+    "environment": [],
+    "maxProviderCostSats": 500,
+    "providerTermsConfirmedAt": "2026-09-20T11:38:20Z",
+    "deliverables": [
+      {
+        "output": "final.video",
+        "filename": "proof-demo-h1-zh-CN-9x16.mp4",
+        "mediaType": "video/mp4",
+        "specification": { "hookIndex": 1, "language": "zh-CN", "aspectRatio": "9:16" }
+      }
+    ]
+  },
+  "ranking_listicle": {
+    "readyForSale": true,
+    "projectDir": "productions/ranking-listicle",
+    "workspace": "productions",
+    "run": "runs/build.svrun",
+    "runtime": "../hypit.runtime.json",
+    "runtimeDataDir": "hypit-runtime/formal",
+    "compiler": "commission-v1",
+    "productionInputs": { "enabled": true, "copyProvider": "deepseek", "voiceProvider": "google-cloud-tts" },
+    "productionAssets": {
+      "look": "productions/look.svs",
+      "product": "productions/shared-assets/arduino-uno-r4-wifi/product.jpg",
+      "presenter": "productions/shared-assets/arduino-uno-r4-wifi/fictional-ranking-host.png",
+      "audio": ["productions/ranking-listicle/assets/narration.wav"]
+    },
+    "commissionReceiptOutput": "commission-receipt",
+    "environment": [],
+    "maxProviderCostSats": 500,
+    "providerTermsConfirmedAt": "2026-09-20T11:38:20Z",
+    "deliverables": [
+      {
+        "output": "final.video",
+        "filename": "ranking-listicle-h1-es-US-9x16.mp4",
+        "mediaType": "video/mp4",
+        "specification": { "hookIndex": 1, "language": "es-US", "aspectRatio": "9:16" }
+      }
+    ]
+  },
+  "two_person_podcast": {
+    "readyForSale": true,
+    "projectDir": "productions/two-person-podcast",
+    "workspace": "productions",
+    "run": "runs/build.svrun",
+    "runtime": "../hypit.runtime.json",
+    "runtimeDataDir": "hypit-runtime/formal",
+    "compiler": "commission-v1",
+    "productionInputs": { "enabled": true, "copyProvider": "deepseek", "voiceProvider": "google-cloud-tts" },
+    "productionAssets": {
+      "look": "productions/look.svs",
+      "product": "productions/shared-assets/arduino-uno-r4-wifi/product.jpg",
+      "presenter": "productions/shared-assets/arduino-uno-r4-wifi/fictional-podcast-hosts.png",
+      "audio": [
+        "productions/two-person-podcast/assets/host-a-1.wav",
+        "productions/two-person-podcast/assets/host-b-1.wav",
+        "productions/two-person-podcast/assets/host-a-2.wav",
+        "productions/two-person-podcast/assets/host-b-2.wav"
+      ]
+    },
+    "commissionReceiptOutput": "commission-receipt",
+    "environment": [],
+    "maxProviderCostSats": 500,
+    "providerTermsConfirmedAt": "2026-09-20T11:38:20Z",
+    "deliverables": [
+      {
+        "output": "final.video",
+        "filename": "two-person-podcast-h1-en-GB-9x16.mp4",
+        "mediaType": "video/mp4",
+        "specification": { "hookIndex": 1, "language": "en-GB", "aspectRatio": "9:16" }
+      }
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+<?svml using="@hypit/svs@1"?>
+
+<sheet version="1">
+  film.vertical { background: #07191c; }
+
+  media.backdrop {
+    stack-order: 0; fit: cover;
+    frame-paint: #07191c; clip: frame;
+  }
+  media.product {
+    stack-order: 40; fit: contain;
+    frame-paint: #f7fbfa; clip: rounded; radius: 28; padding: 18 18;
+    border-width: 3; border-color: #18a6a655;
+  }
+  motion.backdrop {
+    sustain: breathe 0.015 2;
+  }
+  motion.card {
+    enter: pop; enter-frames: 10; enter-easing: ease-out;
+    sustain: float 5 2;
+    exit: fade; exit-frames: 8; exit-easing: ease-in;
+  }
+  motion.punch { enter: pop; enter-frames: 8; enter-easing: ease-out; sustain: breathe 0.025 2; }
+  motion.drift-left { sustain: breathe 0.02 2; }
+  motion.drift-right { sustain: float 7 2; }
+  motion.slow-zoom { sustain: breathe 0.018 2; }
+  motion.reveal { enter: fade; enter-frames: 6; sustain: breathe 0.012 2; }
+
+  text.eyebrow {
+    stack-order: 100; size: 25; weight: 700; line-height: 1.05; tracking: 2;
+    transform: uppercase; align: start; block-align: center; wrap: word;
+    overflow: shrink; minimum-scale: 0.7; padding: 4 8;
+  }
+  text.title {
+    stack-order: 101; size: 58; weight: 800; line-height: 0.98; tracking: -1;
+    align: start; block-align: center; wrap: word;
+    overflow: shrink; minimum-scale: 0.62; padding: 4 8;
+  }
+  text.card {
+    stack-order: 102; size: 34; weight: 750; line-height: 1.05;
+    align: start; block-align: center; wrap: word;
+    overflow: shrink; minimum-scale: 0.65; padding: 12 16;
+  }
+  text.caption {
+    stack-order: 103; size: 28; weight: 650; line-height: 1.08;
+    align: center; block-align: center; wrap: word;
+    overflow: shrink; minimum-scale: 0.64; padding: 10 18;
+  }
+</sheet>

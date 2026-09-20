@@ -1,0 +1,1 @@
+Tres razones para mirar la UNO R4 WiFi. Número tres: conserva el formato UNO que ya conoces. Número dos: integra Wi-Fi y Bluetooth con ESP32-S3. Y número uno: la matriz LED de doce por ocho convierte una idea en una respuesta visible, sin añadir otra pantalla.

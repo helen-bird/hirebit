@@ -1,0 +1,22 @@
+<?svml using="@hypit/markup@1"?>
+<svml>
+  <import as="asset" from="@hypit/media@1"/>
+  <import as="text" from="@hypit/text@1"/>
+  <import as="seedance" from="@hypit/seedance@1"/>
+
+  <asset:Image id="product" src="../../.validation/reference-clone/input/product.jpeg"/>
+  <asset:Video id="reference" src="../../.validation/reference-clone/input/reference.mp4"/>
+
+  <text:Value id="direction">
+    Create a new photorealistic vertical beauty UGC video. The supplied image is the product identity reference: a clear round tub containing many double-ended cotton swabs with light wooden shafts, a pointed cotton tip on one end and a rounded cotton bud on the other. Preserve that distinctive product geometry and material consistently.
+
+    Use the supplied reference video only for its close eye-detail action, hand timing, cotton-swab application motion, camera distance, pacing, transition rhythm, and final reveal. Do not copy or preserve the reference person's identity, face, voice, background details, logos, captions, or audio. Show a different generic adult model in a neutral beauty setting using one of the supplied double-ended cotton swabs to refine eye makeup, with the correct pointed tip visibly contacting the small detail area. Keep the wooden shaft and both tip shapes physically coherent in every visible frame. End with a calm beauty-result reveal. Add no text, logos, subtitles, floating labels, music, or speech.
+  </text:Value>
+
+  <seedance:ReferenceVideo id="product-swap" model="mini"
+    prompt={direction} duration="12" resolution="720p"
+    aspect-ratio="9:16" generate-audio="false">
+    <seedance:Reference image={product} person-reference="false"/>
+    <seedance:Reference video={reference} person-reference="true"/>
+  </seedance:ReferenceVideo>
+</svml>

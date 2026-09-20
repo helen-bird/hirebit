@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0d0e">
+  <title>Hirebit — Agentic Campaign Studio</title>
+  <link rel="stylesheet" href="/console/styles.css">
+</head>
+<body>
+  <div class="noise"></div>
+  <header class="topbar">
+    <a class="brand" href="/console/" aria-label="Hirebit home">
+      <span class="brand-mark">₿</span>
+      <span><strong>HIREBIT</strong><small>AUTONOMOUS CAMPAIGNS</small></span>
+    </a>
+    <div class="topbar-right">
+      <button id="logout" class="session-button" type="button">LOG OUT</button>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <section class="product-intro">
+      <div><p class="eyebrow">AGENTIC CREATIVE COMMERCE</p><h1>Brief in. <em>Campaign out.</em></h1></div>
+    </section>
+
+    <section id="create-view" class="view-panel active" data-view-panel="create">
+      <div id="demo-workspace" class="run-grid">
+        <article class="panel launcher-panel">
+          <div class="panel-heading compact-heading"><span class="index">01</span><div><p class="kicker">PURCHASE MODE</p><h2>Choose authority</h2></div></div>
+          <div class="scenario-list" aria-label="Purchase authority">
+            <button class="preset scenario-card" type="button" data-preset="auto" aria-pressed="false"><span class="scenario-icon">A</span><span><strong>Autonomous</strong><small>Buy within budget</small></span><span>→</span></button>
+            <button class="preset scenario-card" type="button" data-preset="confirm" aria-pressed="false"><span class="scenario-icon">H</span><span><strong>Confirm purchase</strong><small>Ask before payment</small></span><span>→</span></button>
+          </div>
+          <form id="delegation-form">
+            <div class="field-heading"><label for="request">Brief</label><span id="char-count">0 / 1,000</span></div>
+            <textarea id="request" name="request" rows="4" required minlength="10" maxlength="1000" placeholder="Choose a path or describe the outcome…"></textarea>
+            <div class="form-row">
+              <div><label for="platform">Channel</label><select id="platform" name="platform"><option value="TikTok">TikTok</option><option value="Instagram Reels">Instagram Reels</option><option value="YouTube Shorts">YouTube Shorts</option></select></div>
+              <div id="reference-upload-field">
+                <label for="product-image-file">Product image <span class="field-limit">JPG / PNG · 5 MB</span></label>
+                <input id="product-image-file" class="file-input" name="referenceImage" type="file" accept="image/jpeg,image/png">
+                <label class="upload-button" for="product-image-file">
+                  <img id="product-preview" src="/console/demo-product.jpeg" alt="Selected product">
+                  <span id="upload-name">Demo product ready</span><b aria-hidden="true">＋</b>
+                </label>
+              </div>
+            </div>
+            <div class="reference-link-field">
+              <label for="reference-video-url">Reference video <span id="reference-video-kind" class="field-limit">TIKTOK LINK</span></label>
+              <input id="reference-video-url" name="referenceVideoUrl" type="url" inputmode="url" autocomplete="url" value="https://www.tiktok.com/@bilintinamakeup/video/6798977602963918085" placeholder="https://www.tiktok.com/@creator/video/7461234567890123456">
+            </div>
+            <button id="launch-buyer" class="button primary" type="submit"><span>Start</span><span aria-hidden="true">→</span></button>
+          </form>
+        </article>
+
+        <article class="panel signature-panel">
+          <div class="signature-topline"><span>02 · EXECUTE</span><span id="active-id">READY</span></div>
+          <ol id="stage-track" class="stage-track">
+            <li data-stage="intent"><span>1</span><b>Clarify</b><small>Brief</small></li>
+            <li data-stage="decision"><span>2</span><b>Choose</b><small>Compare</small></li>
+            <li data-stage="payment"><span>3</span><b>Pay</b><small>Authorize</small></li>
+            <li data-stage="production"><span>4</span><b>Make</b><small>Hypit</small></li>
+            <li data-stage="package"><span>5</span><b>Deliver</b><small>Proof</small></li>
+          </ol>
+          <div id="stage-content" class="stage-content welcome-state">
+            <div class="motion-flow" aria-label="Brief clarification and campaign flow"><span>BRIEF</span><i>→</i><span class="active-node">CLARIFY</span><i>→</i><span>BUY</span><i>→</i><span>CAMPAIGN</span></div>
+            <h2>Ready when you are.</h2>
+            <p>Review the brief. The agent clarifies the rest.</p>
+          </div>
+          <div id="action-bar" class="action-bar hidden"></div>
+        </article>
+      </div>
+      <div class="swipe-hint"><span>BRIEF</span><i></i><span>WORKFLOW →</span></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="login-dialog" class="login-dialog">
+    <form id="login-form">
+      <p class="kicker">OPERATOR AUTHENTICATION</p>
+      <h2>Unlock the Buyer Console</h2>
+      <p>Enter the Demo access token.</p>
+      <label for="access-token">Access token</label>
+      <input id="access-token" name="token" type="password" autocomplete="current-password" required>
+      <div class="dialog-actions">
+        <button id="login-cancel" class="button" type="button">Cancel</button>
+        <button class="button primary" type="submit">Sign in</button>
+      </div>
+    </form>
+  </dialog>
+  <script type="module" src="/console/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,103 @@
+diff --git a/services/yt-dlp/README.md b/services/yt-dlp/README.md
+index 752da23..78657bc 100644
+--- a/services/yt-dlp/README.md
++++ b/services/yt-dlp/README.md
+@@ -1,6 +1,7 @@
+ # Pinned yt-dlp
+
+-This project owns the locked downloader and its EJS solver dependencies. Prepare it explicitly with
++This project owns the locked downloader, its EJS solver dependencies and the pinned curl-cffi
++impersonation runtime needed by supported sites such as TikTok. Prepare it explicitly with
+ `hypit media prepare-fetch`; `hypit media fetch` only uses the resulting executable and never runs uv.
+ The preparation command reports the executable path under the machine Host state. Use that exact
+ path for `--version`, `--help` or deliberately chosen site-specific options. On Windows it is an
+diff --git a/services/yt-dlp/pyproject.toml b/services/yt-dlp/pyproject.toml
+index a3f5c92..2e98353 100644
+--- a/services/yt-dlp/pyproject.toml
++++ b/services/yt-dlp/pyproject.toml
+@@ -6,7 +6,7 @@ readme = "README.md"
+ requires-python = ">=3.10,<3.14"
+ license = { text = "Hypit Open Source License (Apache-2.0 with additional conditions); see LICENSE at the repository root" }
+ dependencies = [
+-  "yt-dlp[default]==2026.8.19",
++  "yt-dlp[default,pin-curl-cffi]==2026.8.19",
+ ]
+
+ [tool.uv]
+diff --git a/services/yt-dlp/uv.lock b/services/yt-dlp/uv.lock
+index f06a92a..43f5ee0 100644
+--- a/services/yt-dlp/uv.lock
++++ b/services/yt-dlp/uv.lock
+@@ -240,16 +240,40 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/cc/61/d01fc49b8dea277640b55a9e15960dbca9fdc8c9fde18e572d39c59f4019/charset_normalizer-3.5.1-py3-none-any.whl", hash = "sha256:6df0ec430f9a831772c23ca5a224cba36517a58a84bb32c32bb59a9fa67c47f6", size = 68658, upload-time = "2026-08-15T08:20:43.306Z" },
+ ]
+
++[[package]]
++name = "curl-cffi"
++version = "0.16.0"
++source = { registry = "https://pypi.org/simple" }
++dependencies = [
++    { name = "certifi" },
++    { name = "cffi" },
++]
++sdist = { url = "https://files.pythonhosted.org/packages/b4/23/d32e113b16dbfb458bea408871ed98dd12f306a366a04215e84537e0af7e/curl_cffi-0.16.0.tar.gz", hash = "sha256:b00b423da8028eb6221e3b63bcd63d681150c07cee8b16000d1f7ea292731895", size = 238344, upload-time = "2026-08-01T13:45:12.372Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/fd/fe/0c330de78421af13e6384ab948e3adbcd4c638b06b53b7fff108bf1db121/curl_cffi-0.16.0-cp310-abi3-macosx_10_9_x86_64.whl", hash = "sha256:6128021320f74999ec1216c1817b2c3adcb0f334d204add1ccf18e248bf7efcb", size = 3023503, upload-time = "2026-08-01T13:44:33.452Z" },
++    { url = "https://files.pythonhosted.org/packages/2e/49/3b502d0d09e427b1bdec4f7339bb115c971c9b3fdaf355d02ca06e97ad61/curl_cffi-0.16.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:edd5f6e8f122157f4d2351b0b5e48e6a1c0677a2064da71451bb30ef57af19ba", size = 2780341, upload-time = "2026-08-01T13:44:35.131Z" },
++    { url = "https://files.pythonhosted.org/packages/2e/b5/b341f96f9fa12b28d1150913a1f9007a09a36757c81b4100373c5bdbf78b/curl_cffi-0.16.0-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:93615d44f23e56c1256700c2e78de4b879310f39a5621828ea7e2a5ecc04bdda", size = 12824596, upload-time = "2026-08-01T13:44:36.556Z" },
++    { url = "https://files.pythonhosted.org/packages/f5/3b/d600b20bff0c55b80b156dc9be0de7c3b3ee2d29977d0a839ea703fab978/curl_cffi-0.16.0-cp310-abi3-manylinux2014_i686.manylinux_2_17_i686.whl", hash = "sha256:3c31e71bf68a9c02a279a184ec9c0ea7c80ce1ef4f1d35073fae3124eb3a7868", size = 12647842, upload-time = "2026-08-01T13:44:38.814Z" },
++    { url = "https://files.pythonhosted.org/packages/e4/45/9208864ec429558efac168088e50f8a91b947f742ee128cff55b88c7b635/curl_cffi-0.16.0-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:182416f07d71a342240554fa62c22e591999b78c225b21d3fe27d9f807420dd6", size = 13472637, upload-time = "2026-08-01T13:44:40.893Z" },
++    { url = "https://files.pythonhosted.org/packages/eb/c8/1639a1d9c8b64d0323330b219b7207a54b14fc54982c30cb08c8cc95aa16/curl_cffi-0.16.0-cp310-abi3-manylinux_2_28_armv7l.manylinux_2_31_armv7l.whl", hash = "sha256:d95c0deccc2184eeee7c2aa18d07de261184b418210995aabd0d29f98717a05c", size = 12828918, upload-time = "2026-08-01T13:44:43.049Z" },
++    { url = "https://files.pythonhosted.org/packages/0a/02/bcdf03ea583a445280568c9b163c10668037ee09ece62e78c15846a62df0/curl_cffi-0.16.0-cp310-abi3-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:ce1f823bc5ce675291a7cf14781496775dfae9298638c25059f2565f6a58a704", size = 12604731, upload-time = "2026-08-01T13:44:45.239Z" },
++    { url = "https://files.pythonhosted.org/packages/17/8b/4ddae52044c537ace13ad7e46dded8e9340a64e0704e320455c5151108a8/curl_cffi-0.16.0-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:e52586a9dc4ed5e75faa39be0f30353b10cdc7410bad276beb013085e974bb44", size = 12576433, upload-time = "2026-08-01T13:44:47.626Z" },
++    { url = "https://files.pythonhosted.org/packages/5a/f5/38ee2f039db7832f07ce91f6a3d22d87ebfcfaa541130371ac1faa5caea9/curl_cffi-0.16.0-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:ce87f301b31147711c3aebc86fb7e16d8dc48f7e5df272c1bea760c687e28eef", size = 13240699, upload-time = "2026-08-01T13:44:49.727Z" },
++    { url = "https://files.pythonhosted.org/packages/ad/03/b9df2973f1119f9d11d8fb3bf2682e5ffe5c52ef3ab89f720473c60fe97e/curl_cffi-0.16.0-cp310-abi3-win_amd64.whl", hash = "sha256:e22a8212d830108e977ff394237f637238e265f5f65037d6c1ee71ea8cc03bcb", size = 1976497, upload-time = "2026-08-01T13:44:51.839Z" },
++    { url = "https://files.pythonhosted.org/packages/6b/8b/092beeb5fbe3b7370666708eb5618a9e593ffc80ecb2c97c3395158d270b/curl_cffi-0.16.0-cp310-abi3-win_arm64.whl", hash = "sha256:095fc36e4988736f31521d6fe0aa1f243dba22656b4818fc2fb3b7a547e7a9ba", size = 1711122, upload-time = "2026-08-01T13:44:53.242Z" },
++    { url = "https://files.pythonhosted.org/packages/15/ea/81cf3858b256494b31a554cf76bbd345def3ea7e7a1a592cc515633b4e28/curl_cffi-0.16.0-cp313-abi3-android_24_arm64_v8a.whl", hash = "sha256:06b1c7e07af8ff7c4c5ce4086ea89cc582ebff9adff4a37cfffa5f5de5d5b943", size = 8603463, upload-time = "2026-08-01T13:44:55.003Z" },
++]
++
+ [[package]]
+ name = "hypit-yt-dlp"
+ version = "0.1.0"
+ source = { virtual = "." }
+ dependencies = [
+-    { name = "yt-dlp", extra = ["default"] },
++    { name = "yt-dlp", extra = ["default", "pin-curl-cffi"] },
+ ]
+
+ [package.metadata]
+-requires-dist = [{ name = "yt-dlp", extras = ["default"], specifier = "==2026.8.19" }]
++requires-dist = [{ name = "yt-dlp", extras = ["default", "pin-curl-cffi"], specifier = "==2026.8.19" }]
+
+ [[package]]
+ name = "idna"
+@@ -328,6 +352,15 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl", hash = "sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0", size = 73075, upload-time = "2026-05-14T19:25:26.443Z" },
+ ]
+
++[[package]]
++name = "typing-extensions"
++version = "4.16.0"
++source = { registry = "https://pypi.org/simple" }
++sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5", size = 113555, upload-time = "2026-07-02T08:40:05.92Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
++]
++
+ [[package]]
+ name = "urllib3"
+ version = "2.8.0"
+@@ -523,6 +556,13 @@ default = [
+     { name = "websockets", version = "17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+     { name = "yt-dlp-ejs" },
+ ]
++pin-curl-cffi = [
++    { name = "certifi", marker = "implementation_name == 'cpython'" },
++    { name = "cffi", marker = "implementation_name == 'cpython'" },
++    { name = "curl-cffi", marker = "implementation_name == 'cpython'" },
++    { name = "pycparser", marker = "implementation_name == 'cpython'" },
++    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
++]
+
+ [[package]]
+ name = "yt-dlp-ejs"

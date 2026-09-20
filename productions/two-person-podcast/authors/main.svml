@@ -1,0 +1,69 @@
+<?svml using="@hypit/markup@1"?>
+<svml>
+  <import as="asset" from="@hypit/media@1"/>
+  <import as="pipeline" from="@hypit/media-pipeline@1"/>
+  <import as="time" from="@hypit/timeline-author@1"/>
+  <import as="space" from="@hypit/spatial@1"/>
+  <import as="program" from="@hypit/program-space@1"/>
+  <import as="fonts" from="@hypit/fonts-open@1"/>
+  <import as="media-track" from="@hypit/media-track@1"/>
+  <import as="audio" from="@hypit/audio-track@1"/>
+  <import as="typo" from="@hypit/typography-track@1"/>
+  <import as="film" from="@hypit/film@1"/>
+  <import as="render" from="@hypit/render-hyperframes@1"/>
+  <import as="look" source="../../look.svs"/>
+
+  <asset:Image id="hosts" src="../../shared-assets/arduino-uno-r4-wifi/fictional-podcast-hosts.png"/>
+  <asset:Image id="product" src="../../shared-assets/arduino-uno-r4-wifi/product.jpg"/>
+  <asset:Audio id="host-a-one" src="../assets/host-a-1.wav"/>
+  <asset:Audio id="host-b-one" src="../assets/host-b-1.wav"/>
+  <asset:Audio id="host-a-two" src="../assets/host-a-2.wav"/>
+  <asset:Audio id="host-b-two" src="../assets/host-b-2.wav"/>
+
+  <space:Canvas id="canvas" width="540" height="960"/>
+  <program:Clock id="clock" frame-rate="30"/>
+  <time:Timeline id="program" clock={clock} end="25.5s"/>
+  <space:Frame id="full" within={canvas} left="0%" top="0%" right="100%" bottom="100%"/>
+  <space:Frame id="product-card" within={canvas} left="32%" top="55%" right="68%" bottom="73%"/>
+  <space:Frame id="eyebrow-frame" within={canvas} left="6%" top="5%" right="94%" bottom="11%"/>
+  <space:Frame id="question-frame" within={canvas} left="6%" top="73%" right="94%" bottom="94%"/>
+  <space:Extent id="hosts-size" width="941" height="1672"/>
+  <space:Extent id="product-size" width="1280" height="972"/>
+
+  <media-track:Track id="visuals" timeline={program.timeline} canvas={canvas}>
+    <media-track:Item id="host-shot" image={hosts} extent={hosts-size}
+      during="program" frame={full} appearance={look.media.backdrop} motion={look.motion.backdrop}/>
+    <media-track:Item id="product-shot" image={product} extent={product-size}
+      start="4.8s" end="25.5s" frame={product-card} appearance={look.media.product} motion={look.motion.card}/>
+  </media-track:Track>
+
+  <fonts:Stack id="font" family="inter" weight="700" style="normal" emoji="color"/>
+  <typo:Style id="eyebrow-style" recipe={look.text.eyebrow} font={font}><typo:Fill color="#8ff1e8"/></typo:Style>
+  <typo:Style id="dialogue-style" recipe={look.text.caption} font={font}>
+    <typo:Fill color="#ffffff"/><typo:Box target="line" continuity="isolated" color="#17292cee" padding="9 14" radius="12"/>
+  </typo:Style>
+  <typo:Motion id="arrive"><typo:ItemKeyframe at="0" y="22" opacity="0"/><typo:ItemKeyframe at="8" y="0" opacity="1"/></typo:Motion>
+  <typo:Track id="copy" timeline={program.timeline}>
+    <typo:Area id="eyebrow" placement={eyebrow-frame} style={eyebrow-style} start="0.2s" end="25.5s">MAKER TABLE · TWO VOICES</typo:Area>
+    <typo:Area id="line-a-one" placement={question-frame} style={dialogue-style} motion={arrive} start="0.5s" end="5.2s">MAYA · New UNO—or just Wi-Fi?</typo:Area>
+    <typo:Area id="line-b-one" placement={question-frame} style={dialogue-style} motion={arrive} start="5.2s" end="13.7s">LEO · Familiar shape. New 32-bit core and wireless co-processor.</typo:Area>
+    <typo:Area id="line-a-two" placement={question-frame} style={dialogue-style} motion={arrive} start="13.7s" end="18.2s">MAYA · So existing maker habits still transfer?</typo:Area>
+    <typo:Area id="line-b-two" placement={question-frame} style={dialogue-style} motion={arrive} start="18.2s" end="25.5s">LEO · The LED matrix answers back.</typo:Area>
+  </typo:Track>
+
+  <pipeline:Normalize id="a-one-media" source={host-a-one} clock={clock} video="none" audio="default" span-authority="audio"/>
+  <pipeline:Normalize id="b-one-media" source={host-b-one} clock={clock} video="none" audio="default" span-authority="audio"/>
+  <pipeline:Normalize id="a-two-media" source={host-a-two} clock={clock} video="none" audio="default" span-authority="audio"/>
+  <pipeline:Normalize id="b-two-media" source={host-b-two} clock={clock} video="none" audio="default" span-authority="audio"/>
+  <audio:Track id="voices" timeline={program.timeline}>
+    <audio:Item id="maya-one" source={a-one-media.media} start="0.5s" end="5.2s" playback="once" gain="1" fade-in="2f" fade-out="4f"/>
+    <audio:Item id="leo-one" source={b-one-media.media} start="5.2s" end="13.7s" playback="once" gain="1" fade-in="2f" fade-out="4f"/>
+    <audio:Item id="maya-two" source={a-two-media.media} start="13.7s" end="18.2s" playback="once" gain="1" fade-in="2f" fade-out="4f"/>
+    <audio:Item id="leo-two" source={b-two-media.media} start="18.2s" end="25.5s" playback="once" gain="1" fade-in="2f" fade-out="4f"/>
+  </audio:Track>
+
+  <film:Film id="main" canvas={canvas} timeline={program.timeline} appearance={look.film.vertical}>
+    <film:Track source={visuals.visual}/><film:Track source={copy.track}/><film:Track source={voices.audio}/>
+  </film:Film>
+  <render:Video id="final" composition={main.composition} timeline={program.timeline}/>
+</svml>

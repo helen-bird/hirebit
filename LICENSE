@@ -1,0 +1,25 @@
+Hirebit — All Rights Reserved
+
+Copyright (c) 2026 the Hirebit copyright holders.
+
+Except as required by applicable law or the terms of the platform hosting this
+repository, no permission is granted to use, copy, modify, distribute, sublicense,
+sell, or otherwise redistribute the original Hirebit code, documentation, or
+project-owned assets without prior written permission from the relevant copyright
+holder. Public availability does not make this project open source.
+
+This notice does not restrict rights granted by GitHub's Terms of Service for
+viewing and forking a public repository through GitHub's functionality. It grants
+no additional rights to reuse or redistribute the project.
+
+Third-party components and assets are excluded from this notice and retain their
+own licenses. In particular, vendor/hypit and patches/hypit are governed by the
+Hypit license. The Arduino product photograph and adaptations containing that
+photograph, including the four curated final preview videos, retain applicable
+CC BY-SA 4.0 rights and obligations. See THIRD_PARTY_NOTICES.md and the source
+record in productions/shared-assets/arduino-uno-r4-wifi/SOURCES.md.
+
+THE MATERIAL IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, AND NON-INFRINGEMENT. TO THE EXTENT PERMITTED BY LAW, THE COPYRIGHT
+HOLDERS SHALL NOT BE LIABLE FOR CLAIMS OR DAMAGES ARISING FROM ITS USE.

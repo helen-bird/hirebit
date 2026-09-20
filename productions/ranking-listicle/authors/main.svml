@@ -1,0 +1,66 @@
+<?svml using="@hypit/markup@1"?>
+<svml>
+  <import as="asset" from="@hypit/media@1"/>
+  <import as="pipeline" from="@hypit/media-pipeline@1"/>
+  <import as="time" from="@hypit/timeline-author@1"/>
+  <import as="space" from="@hypit/spatial@1"/>
+  <import as="program" from="@hypit/program-space@1"/>
+  <import as="fonts" from="@hypit/fonts-open@1"/>
+  <import as="media-track" from="@hypit/media-track@1"/>
+  <import as="audio" from="@hypit/audio-track@1"/>
+  <import as="typo" from="@hypit/typography-track@1"/>
+  <import as="film" from="@hypit/film@1"/>
+  <import as="render" from="@hypit/render-hyperframes@1"/>
+  <import as="look" source="../../look.svs"/>
+
+  <asset:Image id="host" src="../../shared-assets/arduino-uno-r4-wifi/fictional-ranking-host.png"/>
+  <asset:Image id="product" src="../../shared-assets/arduino-uno-r4-wifi/product.jpg"/>
+  <asset:Audio id="narration" src="../assets/narration.wav"/>
+
+  <space:Canvas id="canvas" width="540" height="960"/>
+  <program:Clock id="clock" frame-rate="30"/>
+  <time:Timeline id="program" clock={clock} end="20s"/>
+  <space:Frame id="full" within={canvas} left="0%" top="0%" right="100%" bottom="100%"/>
+  <space:Frame id="product-card" within={canvas} left="5%" top="59%" right="48%" bottom="80%"/>
+  <space:Frame id="eyebrow-frame" within={canvas} left="6%" top="5%" right="94%" bottom="11%"/>
+  <space:Frame id="rank-frame" within={canvas} left="5%" top="13%" right="76%" bottom="44%"/>
+  <space:Frame id="caption-frame" within={canvas} left="6%" top="82%" right="94%" bottom="95%"/>
+  <space:Extent id="host-size" width="941" height="1672"/>
+  <space:Extent id="product-size" width="1280" height="972"/>
+
+  <media-track:Track id="visuals" timeline={program.timeline} canvas={canvas}>
+    <media-track:Item id="host-shot" image={host} extent={host-size}
+      during="program" frame={full} appearance={look.media.backdrop} motion={look.motion.backdrop}/>
+    <media-track:Item id="product-shot" image={product} extent={product-size}
+      start="7s" end="20s" frame={product-card} appearance={look.media.product} motion={look.motion.card}/>
+  </media-track:Track>
+
+  <fonts:Stack id="font" family="inter" weight="700" style="normal" emoji="color"/>
+  <typo:Style id="eyebrow-style" recipe={look.text.eyebrow} font={font}><typo:Fill color="#8ff1e8"/></typo:Style>
+  <typo:Style id="rank-style" recipe={look.text.title} font={font}>
+    <typo:Fill color="#ffffff"/><typo:Shadow color="#001718cc" x="0" y="5" blur="14"/>
+  </typo:Style>
+  <typo:Style id="caption-style" recipe={look.text.caption} font={font}>
+    <typo:Fill color="#ffffff"/><typo:Box target="line" continuity="isolated" color="#063f43dd" padding="9 14" radius="12"/>
+  </typo:Style>
+  <typo:Motion id="arrive"><typo:ItemKeyframe at="0" x="-34" opacity="0"/><typo:ItemKeyframe at="10" x="0" opacity="1"/></typo:Motion>
+  <typo:Track id="copy" timeline={program.timeline}>
+    <typo:Area id="eyebrow" placement={eyebrow-frame} style={eyebrow-style} start="0.2s" end="20s">TOP 3 · ESPAÑOL US</typo:Area>
+    <typo:Area id="rank-three" placement={rank-frame} style={rank-style} motion={arrive} start="1s" end="6.2s"><typo:P>#3<typo:Break/>Formato UNO familiar</typo:P></typo:Area>
+    <typo:Area id="rank-two" placement={rank-frame} style={rank-style} motion={arrive} start="6.2s" end="11.8s"><typo:P>#2<typo:Break/>Wi-Fi + Bluetooth</typo:P></typo:Area>
+    <typo:Area id="rank-one" placement={rank-frame} style={rank-style} motion={arrive} start="11.8s" end="20s"><typo:P>#1<typo:Break/>Matriz LED</typo:P></typo:Area>
+    <typo:Area id="caption" placement={caption-frame} style={caption-style} start="11.8s" end="20s">Una respuesta visible, sin otra pantalla.</typo:Area>
+  </typo:Track>
+
+  <pipeline:Normalize id="narration-media" source={narration} clock={clock}
+    video="none" audio="default" span-authority="audio"/>
+  <audio:Track id="voice" timeline={program.timeline}>
+    <audio:Item id="ranking-voice" source={narration-media.media} during="program"
+      playback="once" gain="1" fade-in="2f" fade-out="6f"/>
+  </audio:Track>
+
+  <film:Film id="main" canvas={canvas} timeline={program.timeline} appearance={look.film.vertical}>
+    <film:Track source={visuals.visual}/><film:Track source={copy.track}/><film:Track source={voice.audio}/>
+  </film:Film>
+  <render:Video id="final" composition={main.composition} timeline={program.timeline}/>
+</svml>

@@ -1,0 +1,49 @@
+# Secrets and machine-local configuration
+.env*
+!.env.example
+!.env.public-demo.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+.gobtcpay/
+.buyer/
+.seller/
+.demo/
+.shared-model/
+model.integration.json
+productions/hypit.runtime.json
+application_default_credentials.json
+credentials.json
+*-credentials.json
+*service-account*.json
+
+# Dependencies and external checkouts
+node_modules/
+vendor/hypit/node_modules/
+.pnpm-store/
+
+# Runtime state, logs, caches and validation artefacts
+.hypit/
+productions/.hypit/
+.validation/
+.tools/
+.codex-finalizer/
+.deck-build/
+.deck-assets/
+output/
+coverage/
+*.log
+*.pid
+*.tmp
+.DS_Store
+
+# Deployment bundles contain stale environment-specific routing
+cloudflare/*.zip
+
+# Keep only curated final previews; intermediate media stays local.
+productions/previews/*
+!productions/previews/final/
+!productions/previews/final/*.mp4

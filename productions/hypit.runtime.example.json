@@ -1,0 +1,27 @@
+{
+  "format": "hypit.runtime-local@1",
+  "dataRoot": "../.seller/hypit-runtime/formal",
+  "credentials": {
+    "platform": { "use": "@hypit/credential-store-platform" }
+  },
+  "endpoints": {
+    "media.local": {
+      "use": "@hypit/provider-media-local",
+      "config": {
+        "defaultConcurrency": 2,
+        "ffmpegPath": "<absolute-repository-path>/node_modules/ffmpeg-static/ffmpeg",
+        "ffprobePath": "<absolute-repository-path>/node_modules/ffprobe-static/bin/<platform>/ffprobe"
+      }
+    },
+    "hyperframes.local": {
+      "use": "@hypit/provider-hyperframes-local",
+      "config": {
+        "workers": 2,
+        "defaultConcurrency": 1,
+        "ffmpegPath": "<absolute-repository-path>/node_modules/ffmpeg-static/ffmpeg",
+        "ffprobePath": "<absolute-repository-path>/node_modules/ffprobe-static/bin/<platform>/ffprobe",
+        "chromePath": "<absolute-chrome-or-chrome-headless-shell-path>"
+      }
+    }
+  }
+}

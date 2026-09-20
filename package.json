@@ -1,0 +1,44 @@
+{
+  "name": "hirebit",
+  "version": "0.1.0",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "description": "A safety-bounded agentic marketplace for commissioning product videos.",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "buyer:start": "node src/buyer-index.mjs",
+    "demo:seller": "PAYMENT_MODE=demo SELLER_STATE_FILE=demo-state.json node --env-file=.env src/index.mjs",
+    "demo:buyer": "PAYMENT_MODE=demo BUYER_STATE_FILE=demo-state.json BUYER_INTAKE_STATE_FILE=demo-intake-state.json node --env-file=.env src/buyer-index.mjs",
+    "public-demo:seller": "PAYMENT_MODE=demo SELLER_STATE_FILE=public-demo-state.json DEMO_PAYMENT_STATE_FILE=public-demo-payments.json GOOGLE_TTS_MAX_CHARACTERS_PER_ORDER=800 node --env-file=.env --env-file=.env.public-demo src/index.mjs",
+    "public-demo:buyer": "PAYMENT_MODE=demo PUBLIC_DEMO_MODE=1 BUYER_STATE_FILE=public-demo-state.json BUYER_INTAKE_STATE_FILE=public-demo-intake-state.json BUYER_API_TOKEN_FILE=public-demo-api-token node --env-file=.env --env-file=.env.public-demo src/buyer-index.mjs",
+    "public-demo:link": "node --env-file=.env.public-demo scripts/public-demo-link.mjs",
+    "merchant:key": "node scripts/merchant-onboard.mjs key",
+    "merchant:register": "node scripts/merchant-onboard.mjs register",
+    "merchant:verify-and-link": "node scripts/merchant-onboard.mjs verify-and-link",
+    "hypit:smoke": "node scripts/hypit-smoke.mjs",
+    "hypit:setup": "node scripts/setup-hypit.mjs",
+    "production:acceptance": "node --env-file=.env scripts/production-acceptance.mjs",
+    "production:reference-clone": "node --env-file=.env scripts/reference-clone-acceptance.mjs",
+    "production:veo-validation": "node --env-file=.env scripts/veo-product-validation.mjs",
+    "production:veo-continuation": "VEO_VALIDATION_MODE=continuation node --env-file=.env scripts/veo-product-validation.mjs",
+    "worker:image": "docker build -f docker/hypit-worker.Dockerfile -t agentic-hypit-worker:local .",
+    "worker:verify": "node --env-file=.env scripts/verify-worker-isolation.mjs",
+    "repo:check": "node scripts/check-repository.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/index.mjs && node --check src/server.mjs && node --check src/security.mjs && node --check src/safe-file.mjs && node --check src/json-store.mjs && node --check src/external-resource.mjs && node --check src/media-validator.mjs && node --check src/production-contract.mjs && node --check src/production-input-preparer.mjs && node --check src/reference-vision-planner.mjs && node --check src/seller-service.mjs && node --check src/gobtcpay.mjs && node --check src/demo-payment.mjs && node --check src/hypit-adapter.mjs && node --check src/hypit-commission-compiler.mjs && node --check src/docker-hypit-runner.mjs && node --check src/buyer-index.mjs && node --check src/buyer/server.mjs && node --check src/buyer/buyer-service.mjs && node --check src/buyer/campaign-completion.mjs && node --check src/buyer/creative-advisor.mjs && node --check src/buyer/intake-service.mjs && node --check src/buyer/mandate-extractor.mjs && node --check src/buyer/instant-wallet.mjs && node --check scripts/merchant-onboard.mjs && node --check scripts/public-demo-link.mjs && node --check scripts/hypit-smoke.mjs && node --check scripts/production-acceptance.mjs && node --check scripts/reference-clone-acceptance.mjs && node --check scripts/veo-product-validation.mjs && node --check scripts/verify-worker-isolation.mjs && node --check cloudflare/pages/_worker.js && node --check web/app.js"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@scure/bip32": "2.4.0",
+    "@scure/bip39": "2.4.0",
+    "bitcoinjs-lib": "7.0.2"
+  },
+  "devDependencies": {
+    "ffmpeg-static": "5.3.0",
+    "ffprobe-static": "3.1.0"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  }
+}
