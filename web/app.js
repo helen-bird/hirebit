@@ -8,6 +8,7 @@ let pollTimer;
 let selectedPurchaseMode = "auto_within_budget";
 let reusableReferenceUploadId = null;
 let previewObjectUrl = null;
+const selectedDecisionSteps = new Map();
 
 const DEMO_PRODUCT_IMAGE_URL = "/console/demo-product.jpeg";
 const DEMO_VIDEO_URL = "https://www.tiktok.com/@bilintinamakeup/video/6798977602963918085";
@@ -262,19 +263,19 @@ function renderComparisonProgress(delegation) {
   actionBar.classList.add("hidden");
   updateStages(delegation, "decision");
   const mandate = delegation.mandate;
-  stageContent.append(title("AGENT SHOPPING", "Comparing complete purchase plans", "FORMAT × SCOPE × PRICE"));
+  stageContent.append(title("AGENT SHOPPING", "Finding the strongest campaign option", "CREATIVE FIT × SCOPE × PRICE"));
   if (mandate) stageContent.append(dataGrid([
     ["GOAL", mandate.objective],
-    ["SPEND CAP", `${mandate.budgetSats.toLocaleString()} sats`],
+    ["MAX SPEND", `${mandate.budgetSats.toLocaleString()} sats`],
     ["SCOPE", mandate.scopeFlexibility?.hookVariants ? "Agent optimizes variants" : `${mandate.brief?.hookVariants ?? 1} hooks`],
   ]));
   const journey = node("section", "decision-journey live", "");
   const steps = [
-    ["01", "Mandate", "Goal, budget and authority locked", "done"],
-    ["02", "Enumerate", "Building package × scope plans", "active"],
-    ["03", "Filter", "Remove hard-constraint violations", "pending"],
-    ["04", "Rank", "AI judges value and fit", "pending"],
-    ["05", "Purchase", "Code verifies before execution", "pending"],
+    ["01", "Understand", "Your goal, budget and buying preference", "done"],
+    ["02", "Compare", "Exploring services, scope and price", "active"],
+    ["03", "Protect", "Ruling out options outside your limits", "pending"],
+    ["04", "Recommend", "AI weighs campaign value and fit", "pending"],
+    ["05", "Purchase", "Confirm the exact choice before buying", "pending"],
   ];
   for (const [number, label, detail, state] of steps) {
     const step = node("article", `decision-step ${state}`);
@@ -536,6 +537,153 @@ function readableObjective(value) {
   return text === "" ? "Campaign goal" : `${text[0].toUpperCase()}${text.slice(1)}`;
 }
 
+function customerDecisionRationale(campaign) {
+  const decision = campaign.decision;
+  const selected = decision.selected;
+  const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
+  const spend = selected.totalAuthorizedSats ?? selected.quote.amountSats;
+  const remaining = Number.isSafeInteger(budget) ? Math.max(0, budget - spend) : null;
+  const parts = [
+    `${productDisplayName(selected.productId, selected.productName)} is the strongest match for ${readableObjective(decision.objective).toLowerCase()}.`,
+  ];
+  if (campaign.input?.referenceVideoUrl) {
+    parts.push("It can turn your reference into new product-led motion.");
+  }
+  parts.push(`You get ${selectedPlanSummary(decision).toLowerCase()} for ${spend.toLocaleString()} sats${remaining === null ? "." : `, with ${remaining.toLocaleString()} sats left.`}`);
+  if (decision.tradeoffs?.broader?.withinBudget === false) {
+    parts.push("The next larger option would exceed your approved spend.");
+  }
+  return parts.join(" ");
+}
+
+function planLabel(plan) {
+  return `${productDisplayName(plan.productId, plan.productName)} · ${plan.scope?.summary ?? "Requested scope"}`;
+}
+
+function rejectionExplanation(code, plan, decision, campaign) {
+  const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
+  const deadline = campaign.input?.deadlineMinutes;
+  const explanations = {
+    campaign_budget: Number.isSafeInteger(plan.totalAuthorizedSats) && Number.isSafeInteger(budget)
+      ? `Costs ${plan.totalAuthorizedSats.toLocaleString()} sats, above your ${budget.toLocaleString()}-sat limit.`
+      : "Costs more than your approved budget.",
+    budget_exceeded: "Costs more than your approved budget.",
+    per_order_policy_ceiling: "Exceeds the purchase allowance available to this account.",
+    deadline: Number.isSafeInteger(plan.quote?.estimatedTurnaroundMinutes) && Number.isSafeInteger(deadline)
+      ? "This larger scope cannot be completed reliably within your requested delivery window."
+      : "Cannot be delivered within your requested deadline.",
+    reference_adaptation_unsupported: "Cannot turn your reference video into new product-led motion.",
+    reference_product_image_required: "Needs a usable product image before production can begin.",
+    visual_mode_unsupported: "Does not support the visual format requested in your brief.",
+    voice_requirements_unsupported: "Does not support the requested voice setup.",
+    production_variant_limit: "Cannot deliver this many versions in one production run.",
+  };
+  return explanations[code] ?? "Does not meet one of the confirmed campaign requirements.";
+}
+
+function decisionEvidence(campaign) {
+  const decision = campaign.decision;
+  const plans = decision.plans ?? decision.candidates ?? [];
+  const rejected = plans.filter((plan) => !plan.eligible);
+  const eligible = plans.filter((plan) => plan.eligible).sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
+  const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
+  const spend = decision.selected.totalAuthorizedSats ?? decision.selected.quote.amountSats;
+  const authority = campaign.authorization?.autoExecute === true
+    ? "Buy automatically once every confirmed limit is satisfied"
+    : "Ask for your approval before placing the order";
+  const grouped = new Map();
+  for (const plan of plans) grouped.set(plan.productId, [...(grouped.get(plan.productId) ?? []), plan]);
+  const packageItems = [...grouped.entries()].map(([productId, items]) => {
+    const quoted = items.filter((item) => item.quote !== null);
+    const prices = quoted.map((item) => item.totalAuthorizedSats ?? item.quote.amountSats);
+    const hooks = [...new Set(items.map((item) => item.scope?.hookVariants).filter(Number.isSafeInteger))].sort((a, b) => a - b);
+    return {
+      title: productDisplayName(productId, items[0]?.productName),
+      meta: `${items.length} option${items.length === 1 ? "" : "s"} explored${hooks.length ? ` · ${hooks.join(", ")} hook${hooks.length === 1 && hooks[0] === 1 ? "" : "s"}` : ""}`,
+      detail: prices.length
+        ? `${Math.min(...prices).toLocaleString()}–${Math.max(...prices).toLocaleString()} sats depending on scope`
+        : "The requested combination was not available",
+    };
+  });
+  const rankedItems = eligible.map((plan, index) => {
+    const assessment = plan.semanticAssessment;
+    const scores = assessment
+      ? `Goal ${Math.round(assessment.objectiveFit * 100)}% · Creative ${Math.round(assessment.creativeFit * 100)}% · Evidence ${Math.round(assessment.evidenceFit * 100)}%`
+      : `Overall fit ${Math.round((plan.score ?? 0) * 100)}%`;
+    return {
+      title: `${index + 1}. ${planLabel(plan)}`,
+      meta: `${scores} · ${(plan.totalAuthorizedSats ?? plan.quote?.amountSats ?? 0).toLocaleString()} sats`,
+      detail: plan.planId === decision.selected.planId
+        ? customerDecisionRationale(campaign)
+        : "This option meets the campaign requirements and budget, but offers less overall campaign value than the recommendation.",
+    };
+  });
+  return {
+    mandate: {
+      eyebrow: "WHAT YOU ASKED FOR",
+      title: "The agent turned your brief into clear buying boundaries.",
+      intro: "These are the promises the final purchase must keep.",
+      items: [
+        { title: "Campaign goal", meta: readableObjective(decision.objective), detail: "The creative should be optimized for this outcome." },
+        { title: "Approved spend", meta: `${Number(budget).toLocaleString()} sats maximum`, detail: "The agent cannot authorize a plan above this amount." },
+        { title: "Purchase preference", meta: authority, detail: "Your chosen level of autonomy stays attached to this campaign." },
+        { title: "Flexible scope", meta: campaign.input?.scopeFlexibility?.hookVariants ? "The agent may choose the number of hooks" : "The requested output count is fixed", detail: "Flexibility is used only when it improves the campaign inside budget." },
+      ],
+    },
+    enumerate: {
+      eyebrow: "WHAT THE AGENT EXPLORED",
+      title: `${plans.length} complete purchase options were built before choosing one.`,
+      intro: "Each option combines a production format, output scope, price and turnaround—not just a package name.",
+      items: packageItems,
+    },
+    filter: {
+      eyebrow: "WHAT DIDN'T QUALIFY",
+      title: `${rejected.length} option${rejected.length === 1 ? " was" : "s were"} ruled out before recommendation.`,
+      intro: "Only options that respected every approved requirement moved forward.",
+      items: rejected.map((plan) => ({
+        title: planLabel(plan),
+        meta: "Not a fit for this campaign",
+        detail: (plan.rejections ?? []).map((code) => rejectionExplanation(code, plan, decision, campaign)).join(" "),
+      })),
+    },
+    rank: {
+      eyebrow: "HOW THE BEST OPTIONS COMPARED",
+      title: decision.method === "deepseek_semantic"
+        ? "AI compared campaign value—not simply the lowest price."
+        : "The agent compared campaign fit, quality, cost and speed.",
+      intro: "Only matching options appear here. The strongest overall balance ranks first.",
+      items: rankedItems,
+    },
+    purchase: {
+      eyebrow: "WHY THIS PLAN WAS AUTHORIZED",
+      title: `${productDisplayName(decision.selected.productId, decision.selected.productName)} gives the strongest result inside your limit.`,
+      intro: customerDecisionRationale(campaign),
+      items: [
+        { title: "Selected output", meta: selectedPlanSummary(decision), detail: "The scope gives the campaign useful creative coverage without buying unnecessary output." },
+        { title: "Final spend", meta: `${spend.toLocaleString()} of ${Number(budget).toLocaleString()} sats`, detail: `${Math.max(0, budget - spend).toLocaleString()} sats stays unspent.` },
+        { title: "Protected purchase", meta: "One exact plan, authorized once", detail: "A changed price, recipient or scope requires a fresh decision before anything can proceed." },
+      ],
+    },
+  };
+}
+
+function renderDecisionEvidence(panel, evidence) {
+  clear(panel);
+  const heading = node("div", "decision-evidence-heading");
+  const copy = node("div");
+  copy.append(node("span", "", evidence.eyebrow), node("h4", "", evidence.title), node("p", "", evidence.intro));
+  heading.append(copy, node("small", "", "SELECT A STEP TO SEE WHY"));
+  const list = node("div", "decision-evidence-list");
+  for (const item of evidence.items) {
+    const row = node("article", "decision-evidence-item");
+    const label = node("div");
+    label.append(node("strong", "", item.title), node("small", "", item.meta));
+    row.append(label, node("p", "", item.detail));
+    list.append(row);
+  }
+  panel.append(heading, list);
+}
+
 function decisionJourney(campaign, { compact = false } = {}) {
   const decision = campaign?.decision;
   if (!decision?.selected) return null;
@@ -547,19 +695,39 @@ function decisionJourney(campaign, { compact = false } = {}) {
   const remaining = Math.max(0, budget - spend);
   const aiRanked = decision.method === "deepseek_semantic";
   const steps = [
-    ["01", "Mandate", `${readableObjective(decision.objective)} · ${budget.toLocaleString()}-sat cap`],
-    ["02", "Enumerate", `${plans.length} plans across ${packages} packages`],
-    ["03", "Filter", `${eligible} eligible · ${Math.max(0, plans.length - eligible)} blocked by hard rules`],
-    ["04", "Rank", aiRanked ? "AI compared fit, quality, cost and speed" : "Safe scoring compared fit, quality, cost and speed"],
-    ["05", "Purchase", `${productDisplayName(decision.selected.productId, decision.selected.productName)} · ${spend.toLocaleString()} sats · ${remaining.toLocaleString()} kept`],
+    ["mandate", "01", "Understand", `${readableObjective(decision.objective)} · up to ${budget.toLocaleString()} sats`],
+    ["enumerate", "02", "Compare", `${plans.length} options from ${packages} services`],
+    ["filter", "03", "Protect", `${eligible} match · ${Math.max(0, plans.length - eligible)} ruled out`],
+    ["rank", "04", "Recommend", aiRanked ? "AI balanced impact, cost and speed" : "Balanced impact, cost and speed"],
+    ["purchase", "05", "Purchase", `${productDisplayName(decision.selected.productId, decision.selected.productName)} · ${spend.toLocaleString()} sats · ${remaining.toLocaleString()} kept`],
   ];
   const section = node("section", `decision-journey${compact ? " compact" : ""}`);
   section.setAttribute("aria-label", "How the agent chose and authorized the purchase");
-  for (const [number, label, detail] of steps) {
-    const step = node("article", "decision-step done");
+  section.setAttribute("role", "tablist");
+  const evidence = decisionEvidence(campaign);
+  const selectedKey = selectedDecisionSteps.get(campaign.id) ?? "mandate";
+  const panel = node("section", "decision-evidence");
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-live", "polite");
+  for (const [key, number, label, detail] of steps) {
+    const step = node("button", `decision-step done${key === selectedKey ? " selected" : ""}`);
+    step.type = "button";
+    step.setAttribute("role", "tab");
+    step.setAttribute("aria-selected", String(key === selectedKey));
     step.append(node("span", "", number), node("strong", "", label), node("small", "", detail));
+    step.addEventListener("click", () => {
+      selectedDecisionSteps.set(campaign.id, key);
+      for (const item of section.querySelectorAll(".decision-step")) {
+        const isSelected = item === step;
+        item.classList.toggle("selected", isSelected);
+        item.setAttribute("aria-selected", String(isSelected));
+      }
+      renderDecisionEvidence(panel, evidence[key]);
+    });
     section.append(step);
   }
+  renderDecisionEvidence(panel, evidence[selectedKey] ?? evidence.mandate);
+  section.append(panel);
   return section;
 }
 
@@ -570,15 +738,15 @@ function codeGuardrails(campaign) {
   const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats ?? spend;
   const autonomous = campaign.authorization?.autoExecute === true;
   const guardrails = node("section", "code-guardrails");
-  guardrails.append(node("div", "code-guardrails-title", "CODE ENFORCED THE BOUNDARIES"));
+  guardrails.append(node("div", "code-guardrails-title", "YOUR LIMITS STAY PROTECTED"));
   const items = [
-    ["AUTHORITY", autonomous ? "One autonomous purchase inside the confirmed mandate" : "Purchase waits for the customer’s explicit confirmation"],
-    ["BUDGET", `${spend.toLocaleString()} sats is inside the ${budget.toLocaleString()}-sat hard cap`],
-    ["PAYMENT", "Exact quote and recipient must match; the same order cannot pay twice"],
+    ["AUTONOMY", autonomous ? "The agent can buy only inside the campaign you approved" : "The order waits for your explicit approval"],
+    ["SPEND", `${spend.toLocaleString()} sats stays inside your ${budget.toLocaleString()}-sat limit`],
+    ["ORDER", "The approved plan can be purchased once; any change needs a new decision"],
   ];
   for (const [label, detail] of items) {
     const item = node("article");
-    item.append(node("span", "", "LOCKED"), node("strong", "", label), node("small", "", detail));
+    item.append(node("span", "", "PROTECTED"), node("strong", "", label), node("small", "", detail));
     guardrails.append(item);
   }
   return guardrails;
@@ -596,7 +764,7 @@ function planRecap(campaign) {
     node("span", "plan-recap-label", "AGENT'S CHOICE"),
     node("strong", "", productDisplayName(decision.selected.productId, decision.selected.productName)),
     node("small", "", selectedPlanSummary(decision)),
-    node("p", "", concise(decision.rationale, 220)),
+    node("p", "", concise(customerDecisionRationale(campaign), 260)),
   );
   const numbers = node("div", "plan-recap-numbers");
   numbers.append(node("b", "", `${spend.toLocaleString()} / ${Number(budget ?? spend).toLocaleString()} sats`));
@@ -605,9 +773,9 @@ function planRecap(campaign) {
   const compared = decision.plans?.length ?? decision.candidates?.length ?? 0;
   const cheaper = decision.tradeoffs?.cheaper;
   const broader = decision.tradeoffs?.broader;
-  const noteParts = [`Compared ${compared} purchase plans`];
-  if (cheaper) noteParts.push(`lower-cost option ${cheaper.totalAuthorizedSats.toLocaleString()} sats`);
-  if (broader) noteParts.push(`${broader.withinBudget === false ? "next scope exceeds budget" : "more output available"}`);
+  const noteParts = [`Compared ${compared} options`];
+  if (cheaper) noteParts.push(`lower-cost choice ${cheaper.totalAuthorizedSats.toLocaleString()} sats`);
+  if (broader) noteParts.push(`${broader.withinBudget === false ? "larger scope is over budget" : "more output is available"}`);
   recap.append(node("div", "plan-recap-note", noteParts.join(" · ")));
   const journey = decisionJourney(campaign, { compact: true });
   if (journey) recap.append(journey);
@@ -625,7 +793,7 @@ function renderDecision(delegation, { transient = false } = {}) {
   stageContent.append(title(
     "AGENT'S CHOICE",
     "The best plan within your budget",
-    `${decision.plans?.length ?? decision.candidates.length} PLANS CHECKED · ${matched} ELIGIBLE`,
+    `${decision.plans?.length ?? decision.candidates.length} OPTIONS COMPARED · ${matched} MATCH`,
   ));
   const journey = decisionJourney(campaign);
   if (journey) stageContent.append(journey);
@@ -636,7 +804,7 @@ function renderDecision(delegation, { transient = false } = {}) {
     node("span", "best-fit-label", "RECOMMENDED PURCHASE"),
     node("h3", "", productDisplayName(decision.selected.productId, decision.selected.productName)),
     node("strong", "best-fit-scope", selectedPlanSummary(decision)),
-    node("p", "", concise(decision.rationale, 280)),
+    node("p", "", concise(customerDecisionRationale(campaign), 300)),
   );
   best.append(bestCopy, node("strong", "best-fit-price", `${decision.selected.quote.amountSats.toLocaleString()} sats`));
   const why = node("div", "selection-proof");
@@ -689,7 +857,7 @@ function renderDecision(delegation, { transient = false } = {}) {
   const comparisonHead = node("div", "package-comparison-head");
   comparisonHead.append(
     node("strong", "", "How the packages differ"),
-    node("small", "", "The agent checked format, capability, scope, price, and deadline"),
+    node("small", "", "See what each option delivers and why it fits—or does not"),
   );
   comparison.append(comparisonHead);
   const list = node("div", "package-comparison-grid");
@@ -699,7 +867,7 @@ function renderDecision(delegation, { transient = false } = {}) {
     const card = node("article", `package-option${selected ? " selected" : ""}${candidate.eligible ? "" : " rejected"}`);
     const top = node("div", "package-option-top");
     top.append(
-      node("span", "package-option-status", selected ? "✓ SELECTED" : candidate.eligible ? "ELIGIBLE" : "NOT SELECTED"),
+      node("span", "package-option-status", selected ? "✓ SELECTED" : candidate.eligible ? "MATCH" : "NOT A MATCH"),
       node("b", "", candidate.quote
         ? `${candidate.quote.amountSats.toLocaleString()} sats`
         : `from ${Number(profile.basePriceSats ?? 0).toLocaleString()} sats`),
