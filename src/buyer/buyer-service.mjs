@@ -105,7 +105,17 @@ function validateSellerOrder(order, quote, campaign, policy, now) {
 }
 
 export class BuyerService {
-  constructor({ store, seller, wallet, decisionEngine, completer = null, policy, policyLoader = null, clock = Date.now }) {
+  constructor({
+    store,
+    seller,
+    wallet,
+    decisionEngine,
+    completer = null,
+    policy,
+    policyLoader = null,
+    paymentFeeReserveSats = null,
+    clock = Date.now,
+  }) {
     this.store = store;
     this.seller = seller;
     this.wallet = wallet;
@@ -113,6 +123,7 @@ export class BuyerService {
     this.completer = completer;
     this.policy = policy;
     this.policyLoader = policyLoader;
+    this.paymentFeeReserveSats = Number.isSafeInteger(paymentFeeReserveSats) ? paymentFeeReserveSats : null;
     this.clock = clock;
     this.executionTasks = new Map();
     this.completionTasks = new Map();
@@ -755,7 +766,7 @@ export class BuyerService {
       if (policy.paymentsEnabled === false) {
         throw new AppError("payments_disabled", "Buyer payment execution is disabled by policy", 503);
       }
-      const feeReserveSats = Number(policy.maxPaymentFeeSats ?? 0);
+      const feeReserveSats = this.paymentFeeReserveSats ?? Number(policy.maxPaymentFeeSats ?? 0);
       const totalReservedSats = amountSats + feeReserveSats;
       if (totalReservedSats > campaign.authorization.budgetSats) {
         throw new AppError("campaign_budget_exceeded", "Order amount plus the maximum network fee exceeds the authorized budget", 403, {

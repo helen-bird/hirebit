@@ -169,6 +169,9 @@ function makeMandate(extraction, version, context = {}) {
     subject: extraction.subject,
     referenceUploadId: context.referenceUploadId ?? null,
     referenceVideoUrl: context.referenceVideoUrl ?? null,
+    scopeFlexibility: {
+      hookVariants: extraction.brief.hookVariants === null,
+    },
     brief: {
       ...extraction.brief,
       languages: extraction.brief.languages.length > 0
@@ -620,6 +623,7 @@ export class IntakeService {
         ...(deadlineAt === null ? {} : { deadlineAt }),
         ...(mandate.deadlineType === null ? {} : { deadlineType: mandate.deadlineType }),
         preferences: { weights: mandate.decisionPriorities },
+        scopeFlexibility: mandate.scopeFlexibility,
         autoExecute,
         authorizationMode: mandate.authorizationMode,
         delegationId,

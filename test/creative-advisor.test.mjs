@@ -17,9 +17,10 @@ test("DeepSeek creative advisor uses structured ranking and never receives payme
     fetchImpl: async (_url, options) => {
       calls.push(JSON.parse(options.body));
       return responseFor({
-        selectedProductId: "proof_demo",
+        selectedPlanId: "proof_demo:h3",
         decisionRationale: "Evidence-backed demonstration is the strongest conversion format.",
         rankings: [{
+          planId: "proof_demo:h3",
           productId: "proof_demo",
           objectiveFit: 1,
           creativeFit: 0.9,
@@ -33,9 +34,9 @@ test("DeepSeek creative advisor uses structured ranking and never receives payme
   });
   const result = await advisor.rank({
     request: { objective: "conversion", budgetSats: 2500 },
-    candidates: [{ productId: "proof_demo", amountSats: 1300 }],
+    candidates: [{ planId: "proof_demo:h3", productId: "proof_demo", amountSats: 1660 }],
   });
-  assert.equal(result.selectedProductId, "proof_demo");
+  assert.equal(result.selectedPlanId, "proof_demo:h3");
   assert.equal(calls[0].text.format.type, "json_schema");
   assert.ok(!calls[0].input.includes("secret-key"));
   assert.ok(!calls[0].input.includes("paymentId"));

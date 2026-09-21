@@ -30,7 +30,23 @@ test("Buyer chooses product fit rather than simply the cheapest quote", async ()
   assert.equal(social.selected.productId, "two_person_podcast");
   assert.ok(social.selected.quote.amountSats > conversion.selected.quote.amountSats);
   assert.deepEqual(conversion.economicAlternatives.map((item) => item.hookVariants), [1, 3, 5]);
-  assert.equal(conversion.economicAlternatives.find((item) => item.hookVariants === 1).selectedScope, true);
+  assert.equal(conversion.economicAlternatives.find((item) => item.hookVariants === 3).selectedScope, true);
+  assert.equal(conversion.plans.length, 12);
+});
+
+test("Buyer optimizes output scope against the hard budget instead of fixing it before comparison", async () => {
+  const engine = new DecisionEngine({ seller: new CatalogSeller(), policy });
+  const decision = await engine.evaluate({
+    objective: "conversion",
+    budgetSats: 2000,
+    scopeFlexibility: { hookVariants: true },
+  });
+  assert.equal(decision.selected.productId, "proof_demo");
+  assert.equal(decision.selected.quote.addOns.hookVariants, 3);
+  assert.equal(decision.selected.quote.amountSats, 1660);
+  assert.equal(decision.tradeoffs.broader.amountSats, 2020);
+  assert.equal(decision.tradeoffs.broader.withinBudget, false);
+  assert.equal(decision.tradeoffs.cheaper.amountSats, 1300);
 });
 
 test("deadline makes late formats ineligible and leaves an auditable reason", async () => {
@@ -101,15 +117,17 @@ test("semantic advisor ranks only policy-eligible products", async () => {
   const advisor = {
     async rank({ candidates }) {
       assert.ok(candidates.every((candidate) => candidate.estimatedTurnaroundMinutes <= 50));
+      const selected = candidates.find((candidate) => candidate.productId === "ranking_listicle");
       return {
-        selectedProductId: "ranking_listicle",
+        selectedPlanId: selected.planId,
         decisionRationale: "The listicle best expresses the requested category comparison.",
         rankings: candidates.map((candidate) => ({
+          planId: candidate.planId,
           productId: candidate.productId,
-          objectiveFit: candidate.productId === "ranking_listicle" ? 1 : 0.4,
+          objectiveFit: candidate.planId === selected.planId ? 1 : 0.4,
           creativeFit: 0.8,
           evidenceFit: 0.7,
-          overallScore: candidate.productId === "ranking_listicle" ? 0.94 : 0.55,
+          overallScore: candidate.planId === selected.planId ? 0.94 : 0.55,
           rationale: "Grounded candidate assessment",
           risks: [],
         })),

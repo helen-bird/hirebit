@@ -16,12 +16,12 @@ const presets = {
   auto: {
     platform: "TikTok",
     purchaseMode: "auto_within_budget",
-    request: "Create a conversion-focused TikTok launch video for Tick cotton swabs, designed for makeup users who want precise, easy cleanup. Use an energetic United States English voice and product-led visuals. Keep spend under 2,000 sats and deliver within 60 minutes.",
+    request: "Create a conversion-focused TikTok launch campaign for Tick cotton swabs, designed for makeup users who want precise, easy cleanup. Use an energetic United States English voice and product-led visuals. Choose the right number of opening hooks for launch testing. Keep spend under 2,000 sats and deliver within 60 minutes.",
   },
   confirm: {
     platform: "TikTok",
     purchaseMode: "confirm_before_purchase",
-    request: "Create a conversion-focused TikTok launch video for Tick cotton swabs, designed for makeup users who want precise, easy cleanup. Use an energetic United States English voice and product-led visuals. Keep spend under 2,000 sats and deliver within 60 minutes.",
+    request: "Create a conversion-focused TikTok launch campaign for Tick cotton swabs, designed for makeup users who want precise, easy cleanup. Use an energetic United States English voice and product-led visuals. Choose the right number of opening hooks for launch testing. Keep spend under 2,000 sats and deliver within 60 minutes.",
   },
 };
 
@@ -261,12 +261,18 @@ function renderComparisonProgress(delegation) {
   clear(actionBar);
   actionBar.classList.add("hidden");
   updateStages(delegation, "decision");
-  stageContent.append(title("AGENT COMPARISON", "Finding the best fit", "4 PACKAGES"));
+  const mandate = delegation.mandate;
+  stageContent.append(title("AGENT SHOPPING", "Comparing complete purchase plans", "FORMAT × SCOPE × PRICE"));
+  if (mandate) stageContent.append(dataGrid([
+    ["GOAL", mandate.objective],
+    ["SPEND CAP", `${mandate.budgetSats.toLocaleString()} sats`],
+    ["SCOPE", mandate.scopeFlexibility?.hookVariants ? "Agent optimizes variants" : `${mandate.brief?.hookVariants ?? 1} hooks`],
+  ]));
   const scan = node("div", "comparison-scan");
   for (const [index, name] of ["Creator Pitch", "Proof Demo", "Ranking / Listicle", "Two-person Podcast"].entries()) {
     const item = node("div", "comparison-scan-item");
     item.style.setProperty("--scan-delay", `${index * 0.18}s`);
-    item.append(node("span", "scan-dot"), node("strong", "", name), node("small", "", "Checking fit and price"));
+    item.append(node("span", "scan-dot"), node("strong", "", name), node("small", "", "Pricing scope and checking fit"));
     scan.append(item);
   }
   stageContent.append(scan);
@@ -425,14 +431,56 @@ const rejectionLabels = {
 };
 
 function candidateReason(candidate, selectedId) {
-  if (candidate.productId === selectedId) {
-    return `Best fit · ${candidate.quote.estimatedTurnaroundMinutes} min delivery`;
+  if (candidate.planId === selectedId) {
+    return `Best plan · ${candidate.scope?.summary ?? "priced scope"} · ${candidate.quote.estimatedTurnaroundMinutes} min`;
   }
   if (candidate.eligible) return `Meets the brief · ${candidate.quote.estimatedTurnaroundMinutes} min delivery`;
   const reasons = candidate.rejections?.map((reason) => rejectionLabels[reason] ?? null).filter(Boolean) ?? [];
   if (reasons.length > 0) return [...new Set(reasons)].join(" · ");
   if (candidate.error?.message) return candidate.error.message;
   return "Does not satisfy the approved brief";
+}
+
+function selectedPlanSummary(decision) {
+  const quote = decision?.selected?.quote;
+  if (!quote) return "";
+  return decision.selected.scope?.summary
+    ?? `${quote.addOns?.hookVariants ?? 1} hooks · ${(quote.addOns?.languages ?? []).join(" + ")} · ${(quote.addOns?.aspectRatios ?? []).join(" + ")}`;
+}
+
+function concise(text, maxLength = 260) {
+  const value = String(text ?? "").replace(/\s+/gu, " ").trim();
+  if (value.length <= maxLength) return value;
+  const clipped = value.slice(0, maxLength + 1).replace(/\s+\S*$/u, "");
+  return `${clipped}…`;
+}
+
+function planRecap(campaign) {
+  const decision = campaign?.decision;
+  if (!decision?.selected) return null;
+  const spend = decision.selected.totalAuthorizedSats ?? decision.selected.quote.amountSats;
+  const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
+  const remaining = Number.isSafeInteger(budget) ? budget - spend : null;
+  const recap = node("div", "plan-recap");
+  const copy = node("div");
+  copy.append(
+    node("span", "plan-recap-label", "AGENT'S CHOICE"),
+    node("strong", "", decision.selected.productName),
+    node("small", "", selectedPlanSummary(decision)),
+    node("p", "", concise(decision.rationale, 220)),
+  );
+  const numbers = node("div", "plan-recap-numbers");
+  numbers.append(node("b", "", `${spend.toLocaleString()} / ${Number(budget ?? spend).toLocaleString()} sats`));
+  if (remaining !== null) numbers.append(node("small", "", `${Math.max(0, remaining).toLocaleString()} remaining`));
+  recap.append(copy, numbers);
+  const compared = decision.plans?.length ?? decision.candidates?.length ?? 0;
+  const cheaper = decision.tradeoffs?.cheaper;
+  const broader = decision.tradeoffs?.broader;
+  const noteParts = [`Compared ${compared} purchase plans`];
+  if (cheaper) noteParts.push(`lower-cost option ${cheaper.totalAuthorizedSats.toLocaleString()} sats`);
+  if (broader) noteParts.push(`${broader.withinBudget === false ? "next scope exceeds budget" : "more output available"}`);
+  recap.append(node("div", "plan-recap-note", noteParts.join(" · ")));
+  return recap;
 }
 
 function renderDecision(delegation, { transient = false } = {}) {
@@ -442,21 +490,59 @@ function renderDecision(delegation, { transient = false } = {}) {
     renderComparisonProgress(delegation);
     return;
   }
-  const matched = decision.candidates.filter((candidate) => candidate.eligible).length;
+  const matched = (decision.plans ?? decision.candidates).filter((candidate) => candidate.eligible).length;
   stageContent.append(title(
-    "AGENT COMPARISON",
-    "Best fit selected",
-    `${decision.candidates.length} CHECKED · ${matched} MATCH${matched === 1 ? "" : "ES"}`,
+    "AGENT'S CHOICE",
+    "The best plan within your budget",
+    `${decision.plans?.length ?? decision.candidates.length} PLANS CHECKED · ${matched} ELIGIBLE`,
   ));
   const best = node("div", "best-fit-card");
   const bestCopy = node("div");
   bestCopy.append(
-    node("span", "best-fit-label", "BEST FIT"),
+    node("span", "best-fit-label", "RECOMMENDED PURCHASE"),
     node("h3", "", decision.selected.productName),
-    node("p", "", decision.rationale),
+    node("strong", "best-fit-scope", selectedPlanSummary(decision)),
+    node("p", "", concise(decision.rationale, 280)),
   );
   best.append(bestCopy, node("strong", "best-fit-price", `${decision.selected.quote.amountSats.toLocaleString()} sats`));
   stageContent.append(best);
+
+  const authorized = decision.selected.totalAuthorizedSats ?? decision.selected.quote.amountSats;
+  const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
+  const meter = node("div", "budget-meter");
+  const meterHead = node("div", "budget-meter-head");
+  meterHead.append(
+    node("span", "", "AUTHORIZED SPEND"),
+    node("strong", "", `${authorized.toLocaleString()} / ${budget.toLocaleString()} sats`),
+  );
+  const track = node("div", "budget-meter-track");
+  const fill = node("i");
+  fill.style.width = `${Math.min(100, (authorized / budget) * 100)}%`;
+  track.append(fill);
+  meter.append(meterHead, track, node("small", "", `${Math.max(0, budget - authorized).toLocaleString()} sats remain available`));
+  stageContent.append(meter);
+
+  const tradeoffs = node("div", "tradeoff-grid");
+  const tradeoffItems = [
+    ["LOWER COST", decision.tradeoffs?.cheaper],
+    ["SELECTED", decision.tradeoffs?.selected],
+    ["MORE OUTPUT", decision.tradeoffs?.broader],
+  ].filter(([, item]) => item);
+  for (const [label, item] of tradeoffItems) {
+    const selected = item.planId === decision.selected.planId;
+    const card = node("div", `tradeoff-card${selected ? " selected" : ""}${item.withinBudget === false ? " over-budget" : ""}`);
+    card.append(
+      node("span", "", label),
+      node("strong", "", item.label),
+      node("b", "", `${item.totalAuthorizedSats.toLocaleString()} sats`),
+      node("small", "", item.reason),
+    );
+    tradeoffs.append(card);
+  }
+  if (tradeoffItems.length > 1) stageContent.append(tradeoffs);
+
+  const details = node("details", "package-checks");
+  details.append(node("summary", "comparison-label", "See all package checks"));
   const list = node("div", "candidate-list");
   for (const candidate of decision.candidates) {
     const selected = candidate.productId === decision.selected.productId;
@@ -467,10 +553,11 @@ function renderDecision(delegation, { transient = false } = {}) {
     const result = node("div", "candidate-result");
     result.append(node("span", "candidate-status", status), node("span", "price", price));
     head.append(node("h3", "", candidate.productName), result);
-    card.append(head, node("small", "", candidateReason(candidate, decision.selected.productId)));
+    card.append(head, node("small", "", candidateReason(candidate, decision.selected.planId)));
     list.append(card);
   }
-  stageContent.append(list);
+  details.append(list);
+  stageContent.append(details);
   if (!transient && delegation.state === "awaiting_purchase_confirmation") {
     const confirm = node("button", "button confirm", `Approve ${decision.selected.productName} · ${decision.selected.quote.amountSats.toLocaleString()} sats`);
     confirm.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/confirm-purchase`, {}));
@@ -483,6 +570,8 @@ function renderPayment(delegation) {
   const payment = campaign.sellerOrder?.payment ?? {};
   const simulated = payment.simulated === true || campaign.paymentAttempt?.receipt?.simulated === true;
   stageContent.append(title(simulated ? "PAYMENT PREVIEW" : "BITCOIN PAYMENT", "Authorizing the selected package"));
+  const recap = planRecap(campaign);
+  if (recap) stageContent.append(recap);
   const card = node("div", "payment-card");
   const copy = node("div");
   copy.append(node("h3", "", payment.authorization === "authorized"
@@ -500,6 +589,8 @@ function renderProduction(delegation) {
   const production = campaign.sellerOrder?.production ?? {};
   const simulated = campaign.sellerOrder?.payment?.simulated === true;
   stageContent.append(title("VIDEO PRODUCTION", simulated ? "Your campaign is being created" : "Payment unlocked production"));
+  const recap = planRecap(campaign);
+  if (recap) stageContent.append(recap);
   stageContent.append(dataGrid([
     ["PAYMENT", campaign.sellerOrder?.payment?.authorization ?? "pending"],
     ["PRODUCTION", production.state ?? "queued"],
@@ -554,11 +645,8 @@ function renderPackage(delegation) {
     `${campaignPackage.summary.spend.spentSats} SATS ${simulated ? "PREVIEWED" : "SPENT"}`,
   ));
   if (campaign.decision?.selected) {
-    stageContent.append(node(
-      "div",
-      "decision-recap",
-      `Compared ${campaign.decision.candidates.length} offers · Selected ${campaign.decision.selected.productName} at ${campaign.decision.selected.quote.amountSats.toLocaleString()} sats`,
-    ));
+    const recap = planRecap(campaign);
+    if (recap) stageContent.append(recap);
   }
   const video = campaignPackage.files.find((item) => item.mediaType?.startsWith("video/"));
   if (video) {
@@ -618,16 +706,6 @@ function render(delegation) {
 async function act(path, payload) {
   try {
     const result = await api(path, { method: "POST", body: JSON.stringify(payload) });
-    const revealDecision = /\/confirm$/u.test(path) && payload?.approved === true && result.campaign?.decision;
-    if (revealDecision && result.state !== "awaiting_purchase_confirmation") {
-      active = result;
-      clear(stageContent);
-      clear(actionBar);
-      actionBar.classList.add("hidden");
-      updateStages(result, "decision");
-      renderDecision(result, { transient: true });
-      await new Promise((resolve) => setTimeout(resolve, 2200));
-    }
     render(result);
     await loadRecent();
     toast("Workflow updated");

@@ -5,7 +5,8 @@
 Hirebit is a safety-bounded agentic marketplace for commissioning product-marketing videos. A
 customer describes the outcome, supplies a product image and optionally a TikTok, Instagram or
 YouTube reference, then delegates the job to a Buyer agent. The Buyer clarifies missing facts,
-compares Seller packages, enforces a spending mandate and supervises production through Hypit.
+compares complete purchase plans (package × output scope × price), enforces a spending mandate and
+supervises production through Hypit.
 
 The product is designed around a simple idea: an agent may make choices, but it must not invent its
 own authority. Budget, scope, payment and external side effects remain bounded by explicit policy and
@@ -18,8 +19,8 @@ The customer journey is intentionally short:
 1. Choose **Autonomous** or **Confirm before purchase**.
 2. Describe the campaign and add product media.
 3. Answer only the questions needed to make the request executable.
-4. Review the normalized mandate and package comparison.
-5. Let the Buyer purchase the best eligible offer, or approve it first.
+4. Review the normalized mandate and the Agent's package × scope comparison.
+5. Let the Buyer purchase the best eligible plan within budget, or approve it first.
 6. Follow production progress and download the finished video.
 
 Hirebit currently offers four Hypit-backed production packages:
@@ -40,7 +41,7 @@ ratios are 9:16, 1:1 and 16:9, with a hard ceiling of 30 output videos per order
 Browser console
     │ brief, assets, approval
     ▼
-Buyer agent ── intent → clarification → mandate → quote comparison → decision
+Buyer agent ── intent → clarification → mandate → package × scope plans → decision
     │ approved scope, budget and idempotency key
     ▼
 Seller API ── catalog → quote → order → payment evidence → production job
@@ -56,7 +57,7 @@ adapt pacing, framing, transition rhythm and reveal structure. The source person
 captions and claims are not copied.
 
 The Buyer and Seller are separate services. The Seller owns pricing and production capability; the
-Buyer owns customer intent, mandate enforcement and package selection. This keeps a model-generated
+Buyer owns customer intent, mandate enforcement and purchase-plan selection. This keeps a model-generated
 recommendation separate from the code that can authorize payment or start work.
 
 ## Security by design

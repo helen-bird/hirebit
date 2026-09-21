@@ -159,14 +159,41 @@ textarea:focus, input:focus, select:focus { border-color: rgba(247,147,26,.7); b
 .best-fit-card { margin-bottom: 10px; padding: 15px 16px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; border: 1px solid rgba(247,147,26,.58); border-radius: 13px; background: linear-gradient(125deg, rgba(247,147,26,.12), rgba(247,147,26,.025)); }
 .best-fit-label { color: var(--orange); font: 850 8px ui-monospace, monospace; letter-spacing: .13em; }
 .best-fit-card h3 { margin: 5px 0 3px; font-size: 18px; }
+.best-fit-scope { display: block; margin: 2px 0 7px; color: #f5f2e9; font-size: 12px; }
 .best-fit-card p { max-width: 670px; margin: 0; color: #aeb5b5; font-size: 10px; line-height: 1.45; }
 .best-fit-price { color: var(--orange); font-size: 20px; white-space: nowrap; }
+.budget-meter { margin: 0 0 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.018); }
+.budget-meter-head { display: flex; align-items: center; justify-content: space-between; gap: 15px; color: var(--muted); font: 800 8px ui-monospace, monospace; letter-spacing: .1em; }
+.budget-meter-head strong { color: #f5f2e9; font-size: 11px; letter-spacing: 0; }
+.budget-meter-track { height: 5px; margin: 9px 0 7px; overflow: hidden; border-radius: 10px; background: #292e2f; }
+.budget-meter-track i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--orange), #ffc46b); }
+.budget-meter small { color: var(--muted); font-size: 9px; }
+.tradeoff-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0 0 15px; }
+.tradeoff-card { padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.018); }
+.tradeoff-card.selected { border-color: rgba(247,147,26,.6); background: rgba(247,147,26,.07); }
+.tradeoff-card.over-budget { border-style: dashed; opacity: .68; }
+.tradeoff-card > span { display: block; color: var(--muted); font: 850 7px ui-monospace, monospace; letter-spacing: .11em; }
+.tradeoff-card strong, .tradeoff-card b { display: block; }
+.tradeoff-card strong { margin-top: 7px; font-size: 11px; }
+.tradeoff-card b { margin-top: 5px; color: var(--orange); font: 800 10px ui-monospace, monospace; }
+.tradeoff-card small { display: block; margin-top: 7px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.comparison-label { margin: 15px 0 8px; color: var(--muted); font: 850 8px ui-monospace, monospace; letter-spacing: .12em; }
+.package-checks { margin-top: 12px; }
+.package-checks summary { width: fit-content; cursor: pointer; color: #b9c0c0; text-transform: uppercase; }
+.package-checks[open] summary { color: var(--orange); }
 .comparison-scan { display: grid; gap: 8px; }
 .comparison-scan-item { min-height: 54px; padding: 0 14px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.018); animation: scanPackage 1.15s ease-in-out var(--scan-delay) infinite; }
 .comparison-scan-item strong { font-size: 12px; }
 .comparison-scan-item small { color: var(--muted); font: 8px ui-monospace, monospace; }
 .scan-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 0 0 rgba(247,147,26,.35); animation: scanDot 1.15s ease-out var(--scan-delay) infinite; }
-.decision-recap { margin: -4px 0 12px; padding: 9px 11px; border: 1px solid rgba(117,230,230,.18); border-radius: 9px; color: #9da7a7; background: rgba(117,230,230,.035); font: 750 9px ui-monospace, monospace; }
+.plan-recap { margin: -4px 0 14px; padding: 13px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px 20px; align-items: center; border: 1px solid rgba(247,147,26,.32); border-radius: 11px; background: linear-gradient(125deg, rgba(247,147,26,.08), rgba(117,230,230,.025)); }
+.plan-recap-label { display: block; margin-bottom: 5px; color: var(--orange); font: 850 7px ui-monospace, monospace; letter-spacing: .12em; }
+.plan-recap strong { display: block; font-size: 14px; }
+.plan-recap small { display: block; margin-top: 4px; color: #b3baba; font-size: 10px; }
+.plan-recap p { max-width: 680px; margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.plan-recap-numbers { text-align: right; white-space: nowrap; }
+.plan-recap-numbers b { color: var(--orange); font: 850 13px ui-monospace, monospace; }
+.plan-recap-note { grid-column: 1 / -1; padding-top: 9px; border-top: 1px solid rgba(255,255,255,.07); color: #8f9999; font: 750 8px ui-monospace, monospace; letter-spacing: .02em; }
 @keyframes scanPackage { 50% { border-color: rgba(247,147,26,.42); background: rgba(247,147,26,.05); } }
 @keyframes scanDot { 60% { box-shadow: 0 0 0 7px rgba(247,147,26,0); } }
 .payment-card { padding: 18px; border: 1px solid rgba(247,147,26,.3); background: linear-gradient(135deg, rgba(247,147,26,.09), transparent); border-radius: 13px; display: grid; grid-template-columns: 1fr auto; gap: 18px; }
@@ -204,6 +231,9 @@ textarea:focus, input:focus, select:focus { border-color: rgba(247,147,26,.7); b
   .stage-track b, .stage-track small { display: none; }
   .stage-content { padding: 24px 18px; }
   .data-grid { grid-template-columns: 1fr; }
+  .tradeoff-grid { grid-template-columns: 1fr; }
+  .plan-recap { grid-template-columns: 1fr; }
+  .plan-recap-numbers { text-align: left; }
   .proof-strip { grid-template-columns: repeat(2,1fr); }
   .proof-strip div:nth-child(2) { border-right: 0; }
   .proof-strip div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
@@ -427,7 +457,7 @@ body { min-height: 0; }
 .preview-strip { min-height: 39px; margin-top: 10px; padding: 0 13px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border: 1px solid rgba(117,230,230,.18); border-radius: 10px; color: #939b9b; background: rgba(117,230,230,.035); font: 800 7px ui-monospace, monospace; letter-spacing: .09em; }
 
 @media (max-width: 1080px) {
-  .run-grid { grid-template-columns: minmax(290px, .68fr) minmax(480px, 1.32fr); }
+  .run-grid { grid-template-columns: minmax(280px, .68fr) minmax(0, 1.32fr); }
   .stage-track b, .stage-track small { display: none; }
 }
 

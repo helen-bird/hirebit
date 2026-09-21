@@ -66,7 +66,8 @@ const creativeAdvisor = new DeepSeekCreativeAdvisor({
   baseUrl: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
   model: process.env.DEEPSEEK_MODEL ?? "deepseek-flash",
 });
-const decisionEngine = new DecisionEngine({ seller, policy, advisor: creativeAdvisor });
+const paymentFeeReserveSats = paymentMode === "demo" ? 0 : policy.maxPaymentFeeSats;
+const decisionEngine = new DecisionEngine({ seller, policy, advisor: creativeAdvisor, paymentFeeReserveSats });
 const completer = new CampaignCompletionService({ seller, dataDir, advisor: creativeAdvisor });
 const service = new BuyerService({
   store,
@@ -75,6 +76,7 @@ const service = new BuyerService({
   decisionEngine,
   completer,
   policy,
+  paymentFeeReserveSats,
   policyLoader: async () => JSON.parse(await readFile(policyFile, "utf8")),
 });
 await service.recover();
