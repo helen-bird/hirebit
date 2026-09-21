@@ -53,7 +53,9 @@ After the short validation was accepted, one additional bounded Veo Lite request
 
 ## Vision-enhanced result
 
-The live `deepseek-flash` analysis used eight ordered reference frames and the resized product image. It correctly observed the clear tub, pointed and rounded cotton tips, light wood shafts, the reference's eye-detail framing, its transition around 7.2 seconds and its calmer reveal phase. The schema-validated plan was compiled into six product-only shots; the reference person, captions and audio were not reused.
+The original `deepseek-flash` acceptance analysis used eight ordered reference frames and the resized product image. It correctly observed the clear tub, pointed and rounded cotton tips, light wood shafts, the reference's eye-detail framing, its transition around 7.2 seconds and its calmer reveal phase. That historical acceptance run compiled the plan into six product-only shots.
+
+The production path now carries a versioned action sequence and generic subject framing from that bounded analysis into the approved Veo request. Veo produces a new generic adult or hands performing the reusable product action; Hypit uses the generated motion as the visual source and performs narration, caption and timeline assembly. If Veo is disabled, unavailable, over quota or returns no bound output, reference-video production stops explicitly rather than falling back to the historical product-photo shots. The source person's identity, captions and audio are still not reused.
 
 - DeepSeek usage: 3,674 input tokens and 2,465 output tokens in one request
 - Google Cloud TTS: 70 billable characters; maximum estimated cost USD 0.001120

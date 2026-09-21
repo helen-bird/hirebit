@@ -401,7 +401,7 @@ function authorSource({
     const production = variantProductions.get(`${variant.hookIndex}:${variant.language.toLowerCase()}`);
     if (production === undefined) throw new AppError("production_input_variant_missing", "Production input variant is missing", 503);
     const { copy, audioAssets, audioLengths } = production;
-    const referenceShots = referenceAdaptation === null ? null : referenceShotAssets.get(variant.aspectRatio);
+    const referenceShots = referenceShotAssets === null ? null : referenceShotAssets.get(variant.aspectRatio);
     const referenceTimeline = referenceAdaptation === null ? null : referenceShotTimeline(referenceAdaptation.plan, duration);
     const presenterItem = presenterAsset === null || motionAsset !== null || referenceAdaptation !== null ? "" : `
     <media-track:Item id="${ids("presenter-shot")}" image={presenter} extent={${ids("presenter-size")}}
@@ -410,7 +410,7 @@ function authorSource({
   const normalizedMotion = motionAsset === null ? "" : `
   <pipeline:Normalize id="${ids("product-motion-media")}" source={product-motion} clock={${ids("clock")}}
     video="primary-moving" audio="none" span-authority="video"/>`;
-    const referenceVisualItems = referenceTimeline === null ? null : referenceTimeline.map((shot, index) => `
+    const referenceVisualItems = referenceTimeline === null || referenceShots === null ? null : referenceTimeline.map((shot, index) => `
     <media-track:Item id="${ids(`reference-shot-${index + 1}`)}" image={${referenceShots[index].id}} extent={${ids("reference-size")}}
       start="${shot.start}s" end="${shot.end}s" frame={${ids("full")}} appearance={look.media.backdrop} motion={look.motion.${shot.motion.replaceAll("_", "-")}}/>`).join("");
     const visualItems = referenceVisualItems ?? (motionAsset === null ? `${presenterItem}
@@ -450,7 +450,7 @@ function authorSource({
   <space:Frame id="${ids("title-frame")}" within={${ids("canvas")}} left="6%" top="13%" right="94%" bottom="31%"/>
   <space:Frame id="${ids("center-frame")}" within={${ids("canvas")}} left="6%" top="37%" right="94%" bottom="63%"/>
   <space:Frame id="${ids("caption-frame")}" within={${ids("canvas")}} left="6%" top="74%" right="94%" bottom="94%"/>
-  <space:Extent id="${ids("product-size")}" width="${productExtent.width}" height="${productExtent.height}"/>${referenceAdaptation === null ? "" : `
+  <space:Extent id="${ids("product-size")}" width="${productExtent.width}" height="${productExtent.height}"/>${referenceShotAssets === null ? "" : `
   <space:Extent id="${ids("reference-size")}" width="${dimensions.width}" height="${dimensions.height}"/>`}${presenterAsset === null ? "" : `
   <space:Extent id="${ids("presenter-size")}" width="${presenterExtent.width}" height="${presenterExtent.height}"/>`}
 ${normalizedMotion}
@@ -668,7 +668,7 @@ export async function compileCommissionProject({
     imageExtent(productAsset.destination),
     presenterAsset === null ? Promise.resolve(null) : imageExtent(presenterAsset.destination),
   ]);
-  const referenceShotAssets = referenceAdaptation === null ? null : await prepareReferenceShotAssets({
+  const referenceShotAssets = referenceAdaptation === null || motionAsset !== null ? null : await prepareReferenceShotAssets({
     projectDir,
     productAsset,
     productExtent,
@@ -754,10 +754,13 @@ export async function compileCommissionProject({
       boundaryTimes: referenceAdaptation.source.boundaryTimes,
       samplingTimes: referenceAdaptation.sampling,
       visualGrammar: referenceAdaptation.plan.reference.visualGrammar,
+      subjectFraming: referenceAdaptation.plan.reference.subjectFraming,
+      actionSequence: referenceAdaptation.plan.reference.actionSequence,
       pacing: referenceAdaptation.plan.reference.pacing,
       transitionMoment: referenceAdaptation.plan.reference.transitionMoment,
       strategy: referenceAdaptation.plan.adaptation.strategy,
-      renderedShots: referenceShotTimeline(referenceAdaptation.plan, timelineSeconds).map((shot) => ({
+      renderMode: motionAsset === null ? "hypit-image-shots" : "veo-guided-motion",
+      renderedShots: (motionAsset === null ? referenceShotTimeline(referenceAdaptation.plan, timelineSeconds) : []).map((shot) => ({
         start: shot.start,
         end: shot.end,
         motion: shot.motion,

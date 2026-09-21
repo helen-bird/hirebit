@@ -18,9 +18,9 @@ const PRODUCT_LANGUAGE_LIMITATIONS = Object.freeze([
 ]);
 
 const VEO_IMAGE_LIMITATION = "With a supplied product image and no reference video, this package may generate one 8-second product-motion shot; it does not perform literal motion transfer.";
-const REFERENCE_ADAPTATION_LIMITATION = "With both a product image and a supported social-video link, Hypit adapts reusable pacing, framing, transition rhythm, text density, and reveal structure. It does not copy the source person, audio, captions, claims, or likeness, and is not frame-for-frame replacement.";
+const REFERENCE_ADAPTATION_LIMITATION = "With both a product image and a supported social-video link, the service analyzes reusable action choreography, pacing, framing, transitions, and reveal structure, then generates a new generic performance around the supplied product for Hypit assembly. It does not reproduce the source person's identity, audio, captions, claims, or likeness, and is not frame-for-frame replacement.";
 
-export const CATALOG_VERSION = "2026-09-21.2";
+export const CATALOG_VERSION = "2026-09-21.3";
 
 export const PRODUCTS = Object.freeze([
   {
@@ -62,7 +62,7 @@ export const PRODUCTS = Object.freeze([
       referenceAdaptation: true,
     },
     limitations: [...PRODUCT_LANGUAGE_LIMITATIONS, VEO_IMAGE_LIMITATION, REFERENCE_ADAPTATION_LIMITATION],
-    included: ["1 MP4", "Hypit reference-video shot-plan adaptation when an image and link are supplied", "narration audio", "claim captions", "9:16 output"],
+    included: ["1 MP4", "reference-guided generated product action when an image and link are supplied", "Hypit narration, captions, and assembly", "9:16 output"],
   },
   {
     id: "ranking_listicle",

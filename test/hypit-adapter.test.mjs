@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+
+import ffmpegStatic from "ffmpeg-static";
 
 import { downloadSocialReferenceVideo, HypitAdapter } from "../src/hypit-adapter.mjs";
 import { AppError } from "../src/errors.mjs";
 import { ProductionInputPreparer } from "../src/production-input-preparer.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const execFileAsync = promisify(execFile);
 
 test("Hypit social reference fetch localizes a platform page as an order-private video", async () => {
   const directory = await mkdtemp(join(tmpdir(), "hypit-social-reference-"));
@@ -73,6 +79,116 @@ test("reference-video fetch failure stops Seller production instead of degrading
     },
   }), (error) => error.code === "reference_video_fetch_failed");
   assert.equal(buildCalled, false);
+});
+
+test("reference-video production passes the analyzed choreography to Veo instead of using image-only motion", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hypit-reference-veo-"));
+  const workflow = JSON.parse(await readFile(join(rootDir, "config/hypit-workflows.json"), "utf8")).proof_demo;
+  const workflowFile = join(directory, "workflows.json");
+  await writeFile(workflowFile, JSON.stringify({ proof_demo: workflow }));
+  const uploadDirectory = join(directory, "uploads");
+  const uploadFilename = `${"c".repeat(48)}.jpg`;
+  await mkdir(uploadDirectory, { recursive: true });
+  await copyFile(join(rootDir, "product_pic.jpeg"), join(uploadDirectory, uploadFilename));
+  const sourceVideo = join(directory, "reference.mp4");
+  await execFileAsync(ffmpegStatic, [
+    "-nostdin", "-y", "-f", "lavfi", "-i", "testsrc2=size=90x160:rate=10",
+    "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", sourceVideo,
+  ]);
+  const plan = {
+    product: {
+      category: "cotton swabs",
+      observedFeatures: ["light wooden shafts", "white double-ended tips"],
+      visibleUses: ["small-area makeup detailing"],
+      uncertainty: "Material specifications are not verified.",
+    },
+    reference: {
+      visualGrammar: "Macro eye framing, product entry, precise touch-up, then a reveal.",
+      subjectFraming: "Vertical macro framing on a generic adult creator's eye and hand.",
+      actionSequence: [
+        "Bring one cotton swab into frame beside the eye.",
+        "Complete one precise makeup touch-up without touching the eye.",
+        "Move the swab away and rotate it to show both tips.",
+      ],
+      pacing: "fast",
+      transitionMoment: 0.58,
+      typography: "Short high-contrast captions.",
+    },
+    adaptation: {
+      strategy: "Recreate the action rhythm with a new generic creator and the supplied product.",
+      palette: ["#f1e7df", "#9d2878", "#fff4cb"],
+      narration: "Use one precise tool to refine small makeup details.",
+      shots: Array.from({ length: 6 }, (_, index) => ({
+        durationWeight: 1, focusX: 0.5, focusY: 0.5, cropScale: 1.2,
+        motion: ["punch", "drift_left", "drift_right", "slow_zoom", "reveal", "reveal"][index],
+        copy: ["LOOK CLOSER", "ONE PRECISE TOOL", "REFINE DETAILS", "MOVE WITH CONTROL", "SHOW BOTH TIPS", "SEE THE PRODUCT"][index],
+        copyPlacement: "bottom",
+        emphasis: ["hook", "feature", "action", "action", "proof", "cta"][index],
+      })),
+    },
+  };
+  let receivedReference = null;
+  const adapter = new HypitAdapter({
+    rootDir,
+    dataDir: join(directory, "seller-data"),
+    workflowFile,
+    hypitBin: join(rootDir, "vendor/hypit/hypit"),
+    isolationVerified: true,
+    commandRunner: async () => { throw new Error("Hypit build must not start before the Veo assertion"); },
+    inputPreparer: {
+      voiceProvider: { provider: "google-cloud-tts", commercialUseApproved: true },
+      async prepare() {
+        return { voice: { commercialUseApproved: true, requirementsSatisfied: true } };
+      },
+    },
+    videoProvider: {
+      async prepare(request) {
+        receivedReference = request.referenceAdaptation;
+        throw new AppError("test_veo_called", "Veo received reference choreography", 503);
+      },
+    },
+    referenceVisionProvider: {
+      async readiness() { return { configured: true }; },
+      async generate() { return { provider: "test-vision", model: "test", usage: {}, plan }; },
+    },
+    referenceAnalysisRunner: async (_program, args) => {
+      if (args[1] === "probe") return { stdout: JSON.stringify({ duration: 2, width: 90, height: 160, frameRate: 10 }), stderr: "" };
+      if (args[1] === "boundaries") return { stdout: JSON.stringify({ candidates: [{ at: 1, score: 0.9 }] }), stderr: "" };
+      throw new Error(`Unexpected reference command: ${args.join(" ")}`);
+    },
+    trustedUploadOrigin: "https://buyer.example",
+    trustedUploadDirectory: uploadDirectory,
+    referenceVideoFetcher: async (_url, { directory: targetDirectory, basename }) => {
+      await mkdir(targetDirectory, { recursive: true });
+      const path = join(targetDirectory, `${basename}.mp4`);
+      await copyFile(sourceVideo, path);
+      const bytes = await readFile(path);
+      return {
+        path,
+        filename: `${basename}.mp4`,
+        mediaType: "video/mp4",
+        bytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        sourceHost: "www.tiktok.com",
+        sourcePlatform: "TikTok",
+      };
+    },
+  });
+  await assert.rejects(adapter.start({
+    order: { id: "ord_reference_veo", amountSats: 1300 },
+    quote: {
+      product: { id: "proof_demo", name: "Proof Demo", durationSeconds: [20, 45], objectives: ["conversion"] },
+      brief: {
+        productName: "Cotton swabs",
+        description: "Adapt the reference action for this product",
+        referenceUrl: `https://buyer.example/v1/uploads/${uploadFilename}`,
+        evidenceUrl: "https://www.tiktok.com/@creator/video/6798977602963918085",
+      },
+      addOns: { hookVariants: 1, languages: ["en-US"], aspectRatios: ["9:16"] },
+    },
+  }), (error) => error.code === "test_veo_called");
+  assert.equal(receivedReference?.format, "seller.reference-vision-plan@2");
+  assert.deepEqual(receivedReference?.plan.reference.actionSequence, plan.reference.actionSequence);
 });
 
 test("HypitAdapter compiles a paid commission and verifies the Build receipt", async () => {

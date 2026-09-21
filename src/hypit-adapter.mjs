@@ -749,14 +749,33 @@ export class HypitAdapter {
         throw new AppError("production_voice_requirements_unmet", "The configured voice provider did not satisfy the paid voice requirements", 503);
       }
       let generatedVideo = null;
-      if (workflow.videoGeneration?.enabled === true && referenceAdaptation === null) {
-        const commission = JSON.parse(await readFile(commissionPath, "utf8"));
-        const hasCustomerImage = Object.values(commission.localAssets ?? {})
-          .some((item) => item?.mediaType?.startsWith("image/"));
-        if (hasCustomerImage) {
-          if (this.videoProvider === null) throw new AppError("google_veo_unavailable", "Google Veo provider is unavailable", 503);
-          generatedVideo = await this.videoProvider.prepare({ jobDir, order, quote, commissionPath, productionInputs });
-        }
+      const commission = JSON.parse(await readFile(commissionPath, "utf8"));
+      const hasCustomerImage = Object.values(commission.localAssets ?? {})
+        .some((item) => item?.mediaType?.startsWith("image/"));
+      if (referenceAdaptation !== null && workflow.videoGeneration?.enabled !== true) {
+        throw new AppError(
+          "reference_motion_generation_required",
+          "Reference-video production requires the approved generative-motion provider",
+          503,
+        );
+      }
+      if (workflow.videoGeneration?.enabled === true && hasCustomerImage) {
+        if (this.videoProvider === null) throw new AppError("google_veo_unavailable", "Google Veo provider is unavailable", 503);
+        generatedVideo = await this.videoProvider.prepare({
+          jobDir,
+          order,
+          quote,
+          commissionPath,
+          productionInputs,
+          referenceAdaptation,
+        });
+      }
+      if (referenceAdaptation !== null && generatedVideo === null) {
+        throw new AppError(
+          "reference_motion_generation_required",
+          "Reference-video production did not return generated motion; image-only fallback is disabled",
+          503,
+        );
       }
       const manifest = await compileCommissionProject({
         rootDir: this.rootDir,

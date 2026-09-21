@@ -178,7 +178,7 @@ test("commission compiler binds generated product motion and emits Hypit-valid s
   ], { cwd: projectDir, timeout: 120_000 });
 });
 
-test("commission compiler turns a bound reference analysis into six Hypit shots per output", async () => {
+test("commission compiler uses reference-guided Veo motion while retaining the bound analysis receipt", async () => {
   const input = await fixture({ addOns: { hookVariants: 1, languages: ["en-US"], aspectRatios: ["9:16", "1:1"] } });
   const workflows = JSON.parse(await readFile(join(rootDir, "config/hypit-workflows.json"), "utf8"));
   input.workflow = workflows.proof_demo;
@@ -242,6 +242,12 @@ test("commission compiler turns a bound reference analysis into six Hypit shots 
     },
     reference: {
       visualGrammar: "Detail opening, process phase, reveal and close.",
+      subjectFraming: "Vertical macro framing on a generic adult creator's eye and hand.",
+      actionSequence: [
+        "A hand brings one cotton swab beside the eye.",
+        "The creator completes one precise makeup touch-up.",
+        "The hand rotates the swab before the product reveal.",
+      ],
       pacing: "moderate", transitionMoment: 0.58,
       typography: "Short high-contrast statements.",
     },
@@ -259,7 +265,7 @@ test("commission compiler turns a bound reference analysis into six Hypit shots 
     },
   };
   const referenceAdaptation = {
-    format: "seller.reference-vision-plan@1",
+    format: "seller.reference-vision-plan@2",
     orderId: input.order.id,
     productId: input.quote.product.id,
     commissionSha256,
@@ -276,21 +282,45 @@ test("commission compiler turns a bound reference analysis into six Hypit shots 
     plan,
   };
 
-  const manifest = await compileCommissionProject({ rootDir, ...input, referenceAdaptation });
+  const veoDirectory = join(input.jobDir, "veo-inputs");
+  const videoPath = join(veoDirectory, "product-motion.mp4");
+  await mkdir(veoDirectory, { recursive: true });
+  await execFileAsync(ffmpegStatic, [
+    "-nostdin", "-y", "-f", "lavfi", "-i", "color=c=magenta:s=720x1280:d=8:r=30",
+    "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", videoPath,
+  ]);
+  const videoBytes = await readFile(videoPath);
+  const generatedVideo = {
+    format: "seller.google-veo-input@1",
+    orderId: input.order.id,
+    productId: input.quote.product.id,
+    commissionSha256,
+    provider: "google-vertex-veo",
+    model: "veo-3.1-lite-generate-001",
+    output: {
+      path: videoPath,
+      mediaType: "video/mp4",
+      sha256: createHash("sha256").update(videoBytes).digest("hex"),
+      durationSeconds: 8,
+    },
+  };
+
+  const manifest = await compileCommissionProject({ rootDir, ...input, generatedVideo, referenceAdaptation });
   assert.equal(manifest.referenceAdaptationSha256, referenceAdaptation.manifestSha256);
-  assert.equal(manifest.videoInputSha256, null);
+  assert.equal(manifest.videoInputSha256, generatedVideo.output.sha256);
   const projectDir = join(input.jobDir, manifest.projectDirectory);
   const author = await readFile(join(projectDir, "author.svml"), "utf8");
-  assert.equal((author.match(/reference-shot-[1-6]/gu) ?? []).length, 12);
-  assert.match(author, /look\.motion\.punch/u);
-  assert.match(author, /look\.motion\.slow-zoom/u);
-  assert.doesNotMatch(author, /generated-motion|presenter-shot/u);
+  assert.equal((author.match(/reference-shot-[1-6]/gu) ?? []).length, 0);
+  assert.match(author, /generated-motion/u);
+  assert.doesNotMatch(author, /presenter-shot/u);
   const receiptSource = await readFile(join(projectDir, "receipt.svs"), "utf8");
   const encodedReceipt = receiptSource.match(/text: "([^"]+)";/u)?.[1];
   const receipt = decodeHypitTextJson(encodedReceipt);
   assert.equal(receipt.referenceAdaptation.sourceVideoSha256, referenceSha256);
   assert.equal(receipt.referenceAdaptation.productImageSha256, productSha256);
-  assert.equal(receipt.referenceAdaptation.renderedShots.length, 6);
+  assert.equal(receipt.referenceAdaptation.renderMode, "veo-guided-motion");
+  assert.equal(receipt.referenceAdaptation.renderedShots.length, 0);
+  assert.equal(receipt.referenceAdaptation.actionSequence.length, 3);
   await execFileAsync(join(rootDir, "vendor/hypit/hypit"), [
     "check", join(projectDir, manifest.run), "--workspace", projectDir, "--json",
   ], { cwd: projectDir, timeout: 120_000 });

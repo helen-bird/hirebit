@@ -37,6 +37,57 @@ async function setup() {
   return { root, jobDir, order, quote, commissionPath };
 }
 
+async function referenceGuidance(input) {
+  const commissionBytes = await readFile(input.commissionPath);
+  const commission = JSON.parse(commissionBytes);
+  return {
+    format: "seller.reference-vision-plan@2",
+    orderId: input.order.id,
+    productId: input.quote.product.id,
+    commissionSha256: sha256(commissionBytes),
+    manifestSha256: "a".repeat(64),
+    inputs: {
+      productSha256: commission.localAssets.referenceUrl.sha256,
+      referenceSha256: "b".repeat(64),
+    },
+    plan: {
+      product: {
+        category: "cotton swabs",
+        observedFeatures: ["light wooden shafts", "white double-ended tips"],
+        visibleUses: ["small-area makeup detailing"],
+        uncertainty: "Material specifications are not verified.",
+      },
+      reference: {
+        visualGrammar: "Macro eye framing, rapid product entry, precise touch-up, then a clean reveal.",
+        subjectFraming: "Vertical macro framing on a generic adult creator's eye and hand.",
+        actionSequence: [
+          "Bring one cotton swab into frame beside the eye.",
+          "Complete one precise makeup touch-up without touching the eye.",
+          "Move the swab away and rotate it to show both tips.",
+        ],
+        pacing: "fast",
+        transitionMoment: 0.58,
+        typography: "Short high-contrast captions.",
+      },
+      adaptation: {
+        strategy: "Recreate the macro action rhythm with a new generic creator and the supplied product.",
+        palette: ["#f1e7df", "#9d2878", "#fff4cb"],
+        narration: "Use one precise tool to refine small makeup details.",
+        shots: Array.from({ length: 6 }, (_, index) => ({
+          durationWeight: 1,
+          focusX: 0.5,
+          focusY: 0.5,
+          cropScale: 1.2,
+          motion: ["punch", "drift_left", "drift_right", "slow_zoom", "reveal", "reveal"][index],
+          copy: ["LOOK CLOSER", "ONE PRECISE TOOL", "REFINE DETAILS", "MOVE WITH CONTROL", "SHOW BOTH TIPS", "SEE THE PRODUCT"][index],
+          copyPlacement: "bottom",
+          emphasis: ["hook", "feature", "action", "action", "proof", "cta"][index],
+        })),
+      },
+    },
+  };
+}
+
 test("Google Veo provider submits once, persists the operation, and reuses the bound output", async () => {
   const input = await setup();
   const generatedBytes = Buffer.alloc(12_000, 7);
@@ -61,10 +112,12 @@ test("Google Veo provider submits once, persists the operation, and reuses the b
       }), { status: 200 });
     },
   });
+  const referenceAdaptation = await referenceGuidance(input);
   const manifest = await provider.prepare({ ...input, productionInputs: {
     variants: [{ headline: "See the useful detail" }],
-  } });
+  }, referenceAdaptation });
   assert.equal(manifest.provider, "google-vertex-veo");
+  assert.equal(manifest.referenceAdaptationSha256, referenceAdaptation.manifestSha256);
   assert.equal(manifest.output.sha256, sha256(generatedBytes));
   assert.equal(calls.length, 2);
   assert.equal(calls[0].options.headers.authorization, "Bearer private-token");
@@ -73,10 +126,12 @@ test("Google Veo provider submits once, persists the operation, and reuses the b
   assert.equal(body.parameters.sampleCount, 1);
   assert.equal(body.parameters.generateAudio, false);
   assert.equal(body.instances[0].prompt.includes("http"), false);
+  assert.match(body.instances[0].prompt, /Bring one cotton swab into frame beside the eye/u);
+  assert.match(body.instances[0].prompt, /do not reproduce or identify the source person/u);
 
   const again = await provider.prepare({ ...input, productionInputs: {
     variants: [{ headline: "See the useful detail" }],
-  } });
+  }, referenceAdaptation });
   assert.deepEqual(again, manifest);
   assert.equal(calls.length, 2);
   assert.deepEqual(await readFile(manifest.output.path), generatedBytes);

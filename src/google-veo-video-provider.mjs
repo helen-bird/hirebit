@@ -5,6 +5,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { AppError } from "./errors.mjs";
+import { REFERENCE_VISION_PLAN_FORMAT, validateReferenceVisionPlan } from "./reference-vision-planner.mjs";
 
 const execute = promisify(execFile);
 const FORMAT = "seller.google-veo-input@1";
@@ -112,7 +113,7 @@ export class GoogleVeoVideoProvider {
     };
   }
 
-  async prepare({ jobDir, order, quote, commissionPath, productionInputs = null }) {
+  async prepare({ jobDir, order, quote, commissionPath, productionInputs = null, referenceAdaptation = null }) {
     const readiness = this.readiness();
     if (!readiness.configured) throw new AppError("google_veo_unavailable", readiness.issue, 503);
     const outputRoot = join(jobDir, "veo-inputs");
@@ -129,12 +130,27 @@ export class GoogleVeoVideoProvider {
     if (!inside(source.path, jobDir)) throw new AppError("production_asset_path_invalid", "Veo product image escaped the order directory", 503);
     const image = await readFile(source.path);
     if (sha256(image) !== source.sha256) throw new AppError("production_asset_digest_mismatch", "Veo product image changed after commission creation", 503);
+    let referencePlan = null;
+    let referenceAdaptationSha256 = null;
+    if (referenceAdaptation !== null) {
+      if (referenceAdaptation.format !== REFERENCE_VISION_PLAN_FORMAT
+        || referenceAdaptation.orderId !== order.id
+        || referenceAdaptation.productId !== quote.product.id
+        || referenceAdaptation.commissionSha256 !== commissionSha256
+        || referenceAdaptation.inputs?.productSha256 !== source.sha256
+        || typeof referenceAdaptation.manifestSha256 !== "string") {
+        throw new AppError("google_veo_reference_mismatch", "Reference guidance is not bound to this commission", 503);
+      }
+      referencePlan = validateReferenceVisionPlan(referenceAdaptation.plan);
+      referenceAdaptationSha256 = referenceAdaptation.manifestSha256;
+    }
 
     const existingManifest = await readJson(manifestPath);
     if (existingManifest !== null) {
       if (existingManifest.format !== FORMAT || existingManifest.orderId !== order.id
         || existingManifest.productId !== quote.product.id || existingManifest.commissionSha256 !== commissionSha256
-        || existingManifest.inputImageSha256 !== source.sha256 || existingManifest.model !== this.model) {
+        || existingManifest.inputImageSha256 !== source.sha256 || existingManifest.model !== this.model
+        || (existingManifest.referenceAdaptationSha256 ?? null) !== referenceAdaptationSha256) {
         throw new AppError("google_veo_manifest_mismatch", "Existing Veo input is not bound to this commission", 503);
       }
       const bytes = await readFile(outputPath);
@@ -147,17 +163,27 @@ export class GoogleVeoVideoProvider {
     const product = safeText(quote.brief?.productName ?? quote.brief?.subject, "the supplied product", 100);
     const objective = safeText(quote.brief?.description ?? quote.brief?.objective, "show the product clearly in use", 220);
     const headline = safeText(productionInputs?.variants?.[0]?.headline, "See the useful detail", 100);
-    const demonstration = quote.product.id === "proof_demo"
-      ? "Show a clean hands-only demonstration with no visible face or presenter."
-      : "Show a newly generated generic adult creator naturally demonstrating the product.";
+    const demonstration = referencePlan === null
+      ? (quote.product.id === "proof_demo"
+        ? "Show a clean hands-only demonstration with no visible face or presenter."
+        : "Show a newly generated generic adult creator naturally demonstrating the product.")
+      : [
+        "Use a newly generated generic adult actor or hands; do not reproduce or identify the source person.",
+        `Reusable subject framing: ${safeText(referencePlan.reference.subjectFraming, "product-focused creator framing", 160)}.`,
+        `Reusable action choreography: ${referencePlan.reference.actionSequence
+          .map((action, index) => `${index + 1}) ${safeText(action, "show the product", 120)}`).join(" ")}`,
+        `Editing grammar: ${safeText(referencePlan.reference.visualGrammar, "product reveal and demonstration", 220)}.`,
+        `Pacing: ${referencePlan.reference.pacing}; main transition near ${Math.round(referencePlan.reference.transitionMoment * 100)}% of the clip.`,
+        `Adaptation direction: ${safeText(referencePlan.adaptation.strategy, "adapt the reference action to the supplied product", 260)}.`,
+      ].join(" ");
     const prompt = [
       "Create an eight-second vertical social-commerce product video from the supplied real product image.",
       `Product: ${product}. Campaign goal: ${objective}. Creative hook: ${headline}.`,
-      `Start with a clean macro product reveal. ${demonstration} Finish with a stable hero pose.`,
+      `Start with a clean macro product reveal. ${demonstration} Finish with a stable product hero pose.`,
       "Preserve the supplied product's visible materials, colors, proportions, packaging, and distinctive physical details.",
       "Use warm natural indoor light, subtle handheld creator movement, realistic hands, and shallow depth of field.",
-      "Do not invent brand claims, logos, labels, captions, price text, watermarks, extra products, duplicate hands, or floating objects. Keep the lower third clean for later Hypit graphics.",
-    ].join(" ").slice(0, 1_500);
+      "Do not copy the source person's face, body, clothing, identity, or likeness. Do not invent brand claims, logos, labels, captions, price text, watermarks, extra products, duplicate hands, or floating objects. Keep the lower third clean for later Hypit graphics.",
+    ].join(" ").slice(0, 2_500);
     const promptSha256 = sha256(Buffer.from(prompt));
 
     let receipt = await readJson(receiptPath);
@@ -169,6 +195,7 @@ export class GoogleVeoVideoProvider {
         productId: quote.product.id,
         commissionSha256,
         inputImageSha256: source.sha256,
+        referenceAdaptationSha256,
         model: this.model,
         promptSha256,
         status: "submitting",
@@ -241,6 +268,7 @@ export class GoogleVeoVideoProvider {
       productId: quote.product.id,
       commissionSha256,
       inputImageSha256: source.sha256,
+      referenceAdaptationSha256,
       provider: this.provider,
       model: this.model,
       promptSha256,

@@ -17,6 +17,12 @@ function validPlan() {
     },
     reference: {
       visualGrammar: "Close detail opening, steady process phase, then a faster reveal and clean close.",
+      subjectFraming: "Vertical macro framing on a newly generated adult creator's eye and hand.",
+      actionSequence: [
+        "A hand brings one cotton swab into frame beside the eye.",
+        "The creator makes one precise makeup touch-up and moves the swab away.",
+        "The hand rotates the swab to reveal both cotton tips before the product close.",
+      ],
       pacing: "moderate",
       transitionMoment: 0.58,
       typography: "Short centered statements with a high-contrast color card.",
@@ -59,10 +65,12 @@ test("DeepSeek vision request sends only bounded inline images and schema-constr
     referenceFrames: Array.from({ length: 4 }, (_, index) => ({ at: index + 0.5, bytes: Buffer.from(`frame-${index}`) })),
   });
   assert.equal(result.plan.product.category, "double-ended cotton swabs");
+  assert.equal(result.plan.reference.actionSequence.length, 3);
   assert.equal(result.usage.totalTokens, 168);
   assert.equal(request.model, "deepseek-flash");
   assert.equal(request.text.format.type, "json_schema");
   assert.equal(request.input[0].content.filter((part) => part.type === "input_image").length, 5);
+  assert.match(request.input[0].content[0].text, /generic action choreography/u);
   assert.equal(JSON.stringify(request).includes("test-secret"), false);
   assert.equal(JSON.stringify(request).includes("/Users/"), false);
 });

@@ -52,9 +52,12 @@ Hypit worker ── check → plan → durable build → validation → campaign
 
 DeepSeek performs schema-constrained intent extraction, copy generation and reference-frame
 planning. Google Cloud Text-to-Speech supplies the supported production voices. Vertex AI Veo is an
-optional image-to-video source for eligible packages; reference-video orders instead use Hypit to
-adapt pacing, framing, transition rhythm and reveal structure. The source person's likeness, audio,
-captions and claims are not copied.
+image-to-video source for eligible packages. For a supported reference-video order, DeepSeek extracts
+generic action choreography, framing, pacing and transition structure; Veo generates a new generic
+performance around the supplied product; and Hypit assembles that motion with approved narration,
+captions and the final timeline. The source person's identity, likeness, audio, captions and claims are
+not copied. Reference-video orders fail closed when generative motion is unavailable instead of being
+silently replaced by product-photo zooms.
 
 The Buyer and Seller are separate services. The Seller owns pricing and production capability; the
 Buyer owns customer intent, mandate enforcement and purchase-plan selection. This keeps a model-generated
@@ -184,7 +187,8 @@ docs/            operations, acceptance and threat-model documentation
 
 - This is a single-operator reference implementation, not a hardened multi-tenant SaaS deployment.
 - GoBTC availability and funding are external operational dependencies.
-- A reference video guides structure; Hirebit does not promise pixel-identical cloning.
+- A reference video guides generic action choreography and structure; Hirebit does not reproduce the
+  source person's identity or promise pixel-identical cloning.
 - Provider calls may incur charges. Keep quotas and billing alerts enabled before exposing a URL.
 - Hypit's license restricts hosted, multi-tenant and third-party service use. Obtain Hypit.AI's written
   authorization or a commercial license before opening the production capability beyond an approved

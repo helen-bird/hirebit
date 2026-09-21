@@ -37,7 +37,7 @@
     "runtimeDataDir": "hypit-runtime/formal",
     "compiler": "commission-v1",
     "productionInputs": { "enabled": true, "copyProvider": "deepseek", "voiceProvider": "google-cloud-tts" },
-    "referenceAdaptation": { "enabled": true, "provider": "deepseek-vision", "mode": "hypit-shot-plan" },
+    "referenceAdaptation": { "enabled": true, "provider": "deepseek-vision", "mode": "veo-guidance-and-hypit-assembly-v2" },
     "videoGeneration": { "enabled": true, "provider": "google-vertex-veo", "model": "veo-3.1-lite-generate-001", "customerImageOnly": true },
     "productionAssets": {
       "look": "productions/look.svs",
