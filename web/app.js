@@ -9,6 +9,7 @@ let selectedPurchaseMode = "auto_within_budget";
 let reusableReferenceUploadId = null;
 let previewObjectUrl = null;
 const selectedDecisionSteps = new Map();
+const selectedDecisionPages = new Map();
 
 const DEMO_PRODUCT_IMAGE_URL = "/console/demo-product.jpeg";
 const DEMO_VIDEO_URL = "https://www.tiktok.com/@bilintinamakeup/video/6798977602963918085";
@@ -667,21 +668,40 @@ function decisionEvidence(campaign) {
   };
 }
 
-function renderDecisionEvidence(panel, evidence) {
+function renderDecisionEvidence(panel, evidence, { page = 0, onPageChange } = {}) {
   clear(panel);
+  const pageSize = window.matchMedia("(max-width: 760px)").matches ? 2 : 4;
+  const totalPages = Math.max(1, Math.ceil(evidence.items.length / pageSize));
+  const currentPage = Math.min(Math.max(0, page), totalPages - 1);
   const heading = node("div", "decision-evidence-heading");
   const copy = node("div");
   copy.append(node("span", "", evidence.eyebrow), node("h4", "", evidence.title), node("p", "", evidence.intro));
-  heading.append(copy, node("small", "", "SELECT A STEP TO SEE WHY"));
+  heading.append(copy, node("small", "", "EXPLORE THE DECISION"));
+  const main = node("div", "decision-evidence-main");
   const list = node("div", "decision-evidence-list");
-  for (const item of evidence.items) {
+  for (const item of evidence.items.slice(currentPage * pageSize, (currentPage + 1) * pageSize)) {
     const row = node("article", "decision-evidence-item");
     const label = node("div");
     label.append(node("strong", "", item.title), node("small", "", item.meta));
     row.append(label, node("p", "", item.detail));
     list.append(row);
   }
-  panel.append(heading, list);
+  main.append(list);
+  if (totalPages > 1) {
+    const pager = node("nav", "decision-evidence-pager");
+    pager.setAttribute("aria-label", "More decision details");
+    const previous = node("button", "", "← Previous");
+    const next = node("button", "", "Next →");
+    previous.type = "button";
+    next.type = "button";
+    previous.disabled = currentPage === 0;
+    next.disabled = currentPage === totalPages - 1;
+    previous.addEventListener("click", () => onPageChange?.(currentPage - 1));
+    next.addEventListener("click", () => onPageChange?.(currentPage + 1));
+    pager.append(previous, node("span", "", `${currentPage + 1} of ${totalPages}`), next);
+    main.append(pager);
+  }
+  panel.append(heading, main);
 }
 
 function decisionJourney(campaign, { compact = false } = {}) {
@@ -699,7 +719,7 @@ function decisionJourney(campaign, { compact = false } = {}) {
     ["enumerate", "02", "Compare", `${plans.length} options from ${packages} services`],
     ["filter", "03", "Protect", `${eligible} match · ${Math.max(0, plans.length - eligible)} ruled out`],
     ["rank", "04", "Recommend", aiRanked ? "AI balanced impact, cost and speed" : "Balanced impact, cost and speed"],
-    ["purchase", "05", "Purchase", `${productDisplayName(decision.selected.productId, decision.selected.productName)} · ${spend.toLocaleString()} sats · ${remaining.toLocaleString()} kept`],
+    ["purchase", "05", "Purchase", `${productDisplayName(decision.selected.productId, decision.selected.productName)} · ${spend.toLocaleString()} · ${remaining.toLocaleString()} left`],
   ];
   const section = node("section", `decision-journey${compact ? " compact" : ""}`);
   section.setAttribute("aria-label", "How the agent chose and authorized the purchase");
@@ -709,6 +729,16 @@ function decisionJourney(campaign, { compact = false } = {}) {
   const panel = node("section", "decision-evidence");
   panel.setAttribute("role", "tabpanel");
   panel.setAttribute("aria-live", "polite");
+  const showEvidence = (key) => {
+    const pageKey = `${campaign.id}:${key}`;
+    renderDecisionEvidence(panel, evidence[key] ?? evidence.mandate, {
+      page: selectedDecisionPages.get(pageKey) ?? 0,
+      onPageChange: (nextPage) => {
+        selectedDecisionPages.set(pageKey, nextPage);
+        showEvidence(key);
+      },
+    });
+  };
   for (const [key, number, label, detail] of steps) {
     const step = node("button", `decision-step done${key === selectedKey ? " selected" : ""}`);
     step.type = "button";
@@ -722,11 +752,11 @@ function decisionJourney(campaign, { compact = false } = {}) {
         item.classList.toggle("selected", isSelected);
         item.setAttribute("aria-selected", String(isSelected));
       }
-      renderDecisionEvidence(panel, evidence[key]);
+      showEvidence(key);
     });
     section.append(step);
   }
-  renderDecisionEvidence(panel, evidence[selectedKey] ?? evidence.mandate);
+  showEvidence(selectedKey);
   section.append(panel);
   return section;
 }
