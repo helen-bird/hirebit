@@ -60,7 +60,7 @@ test("quote accepts only creative requirements the selected package can deliver"
   }), (error) => error.code === "voice_requirements_unsupported");
 });
 
-test("reference-video orders require a product image and the Proof Demo package", () => {
+test("reference-video orders require a product image and the Product Showcase package", () => {
   const referenceBrief = {
     referenceUrl: "https://example.com/product.jpeg",
     evidenceUrl: "https://www.tiktok.com/@example/video/1234567890123456789",

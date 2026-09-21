@@ -124,7 +124,7 @@ function localizedLabel(language, productId) {
   const family = language.toLowerCase().split("-", 1)[0];
   const names = {
     creator_pitch: { en: "CREATOR PITCH", es: "PRESENTACIÓN CREADORA", zh: "创作者推荐" },
-    proof_demo: { en: "PROOF DEMO", es: "DEMOSTRACIÓN", zh: "功能实证" },
+    proof_demo: { en: "PRODUCT SHOWCASE", es: "PRODUCTO EN ACCIÓN", zh: "产品展示" },
     ranking_listicle: { en: "TOP REASONS", es: "RAZONES CLAVE", zh: "核心亮点" },
     two_person_podcast: { en: "TWO VOICES", es: "DOS VOCES", zh: "双人对谈" },
   };

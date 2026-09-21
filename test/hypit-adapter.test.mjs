@@ -19,13 +19,16 @@ const execFileAsync = promisify(execFile);
 
 test("Hypit social reference fetch localizes a platform page as an order-private video", async () => {
   const directory = await mkdtemp(join(tmpdir(), "hypit-social-reference-"));
+  const stateHome = join(directory, "state");
+  let commandCalls = 0;
   const result = await downloadSocialReferenceVideo(
     "https://www.youtube.com/shorts/dQw4w9WgXcQ",
     {
       directory: join(directory, "inputs"),
-      stateHome: join(directory, "state"),
+      stateHome,
       hypitBin: "/fake/hypit",
       commandRunner: async (program, args) => {
+        commandCalls += 1;
         assert.equal(program, "/fake/hypit");
         if (args[1] === "prepare-fetch") return { stdout: JSON.stringify({ ready: true }), stderr: "" };
         assert.deepEqual(args.slice(0, 3), ["media", "fetch", "https://www.youtube.com/shorts/dQw4w9WgXcQ"]);
@@ -39,6 +42,34 @@ test("Hypit social reference fetch localizes a platform page as an order-private
   assert.equal(result.sourcePlatform, "YouTube Shorts");
   assert.equal(result.fetchedBy, "hypit-media-fetch");
   assert.match(result.sha256, /^[a-f0-9]{64}$/u);
+  const cached = await downloadSocialReferenceVideo(
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+    {
+      directory: join(directory, "second-order-inputs"),
+      stateHome,
+      hypitBin: "/fake/hypit",
+      commandRunner: async () => { throw new Error("Cache hit must not access the network"); },
+    },
+  );
+  assert.equal(cached.fetchedBy, "hypit-reference-cache");
+  assert.equal(cached.sha256, result.sha256);
+  assert.equal(commandCalls, 2);
+});
+
+test("Hypit social reference fetch reports source unavailability instead of a generic command failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hypit-social-reference-timeout-"));
+  await assert.rejects(
+    downloadSocialReferenceVideo("https://www.tiktok.com/@creator/video/6798977602963918085", {
+      directory: join(directory, "inputs"),
+      stateHome: join(directory, "state"),
+      hypitBin: "/fake/hypit",
+      commandRunner: async () => {
+        throw new AppError("hypit_command_failed", "Hypit exited with code 1", 502);
+      },
+    }),
+    (error) => error.code === "reference_video_fetch_failed"
+      && error.message.includes("retry the same paid order"),
+  );
 });
 
 test("reference-video fetch failure stops Seller production instead of degrading to link-only", async () => {

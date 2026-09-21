@@ -120,6 +120,33 @@ export async function downloadSocialReferenceVideo(value, {
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await mkdir(stateHome, { recursive: true, mode: 0o700 });
   const path = join(directory, `${basename}.mp4`);
+  const cacheDirectory = join(stateHome, "reference-cache");
+  const cacheFilename = `${createHash("sha256").update(value).digest("hex")}.mp4`;
+  await mkdir(cacheDirectory, { recursive: true, mode: 0o700 });
+  try {
+    const cached = await resolveRegularFile(cacheDirectory, cacheFilename, "reference_video_cache_miss");
+    try {
+      if (cached.size < 1 || cached.size > maxBytes) {
+        throw new AppError("reference_video_cache_invalid", "Cached reference video is not usable", 502);
+      }
+      const bytes = await cached.handle.readFile();
+      await writeFile(path, bytes, { mode: 0o600, flag: "wx" });
+      return {
+        path,
+        filename: `${basename}.mp4`,
+        mediaType: "video/mp4",
+        bytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        sourceHost: new URL(value).hostname,
+        sourcePlatform: platform,
+        fetchedBy: "hypit-reference-cache",
+      };
+    } finally {
+      await cached.handle.close().catch(() => {});
+    }
+  } catch (error) {
+    if (!(error instanceof AppError) || error.code !== "reference_video_cache_miss") throw error;
+  }
   const projectRoot = resolve(dirname(resolve(hypitBin)), "../..");
   const useDirectNodeLauncher = commandRunner === command;
   const hypitProgram = useDirectNodeLauncher ? process.execPath : hypitBin;
@@ -167,6 +194,9 @@ export async function downloadSocialReferenceVideo(value, {
     }
     await chmod(path, 0o600);
     const bytes = await readFile(path);
+    await writeFile(join(cacheDirectory, cacheFilename), bytes, { mode: 0o600, flag: "wx" }).catch((error) => {
+      if (error?.code !== "EEXIST") throw error;
+    });
     return {
       path,
       filename: `${basename}.mp4`,
@@ -179,7 +209,17 @@ export async function downloadSocialReferenceVideo(value, {
     };
   } catch (error) {
     await unlink(path).catch(() => {});
-    if (error instanceof AppError) throw error;
+    if (error instanceof AppError) {
+      if (["hypit_command_failed", "hypit_timeout", "hypit_spawn_failed"].includes(error.code)) {
+        throw new AppError(
+          "reference_video_fetch_failed",
+          "The reference-video source could not be reached; retry the same paid order when the source is available",
+          502,
+          { causeCode: error.code },
+        );
+      }
+      throw error;
+    }
     throw new AppError("reference_video_fetch_failed", "Hypit could not fetch the reference video page", 502, {
       cause: String(error?.message ?? error).slice(-1000),
     });

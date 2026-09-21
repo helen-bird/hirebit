@@ -20,7 +20,7 @@ const PRODUCT_LANGUAGE_LIMITATIONS = Object.freeze([
 const VEO_IMAGE_LIMITATION = "With a supplied product image and no reference video, this package may generate one 8-second product-motion shot; it does not perform literal motion transfer.";
 const REFERENCE_ADAPTATION_LIMITATION = "With both a product image and a supported social-video link, the service analyzes reusable action choreography, pacing, framing, transitions, and reveal structure, then uses two consecutive 8-second generations for Hypit assembly. Reference-guided delivery follows the source duration within an 8-16 second production window. It does not reproduce the source person's identity, audio, captions, claims, or likeness, and is not frame-for-frame replacement.";
 
-export const CATALOG_VERSION = "2026-09-21.4";
+export const CATALOG_VERSION = "2026-09-21.5";
 
 export const PRODUCTS = Object.freeze([
   {
@@ -45,7 +45,7 @@ export const PRODUCTS = Object.freeze([
   },
   {
     id: "proof_demo",
-    name: "Proof Demo",
+    name: "Product Showcase",
     availability: "available",
     basePriceSats: 1300,
     durationSeconds: [8, 45],

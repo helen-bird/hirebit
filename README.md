@@ -28,7 +28,7 @@ Hirebit currently offers four Hypit-backed production packages:
 | Package | Best for | Production shape |
 | --- | --- | --- |
 | Creator Pitch | Fast product storytelling | Presenter-led or presenter-free vertical pitch |
-| Proof Demo | Product evidence and reference-led adaptation | Product-first demo with structured pacing |
+| Product Showcase | Product demonstration and reference-led adaptation | Product-first action, narration, captions, and structured pacing |
 | Ranking / Listicle | Comparison and discovery content | Ranked hooks with repeatable visual beats |
 | Two-person Podcast | Conversational explanation | Two distinct voices in a dialogue format |
 

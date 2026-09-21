@@ -269,7 +269,7 @@ function renderComparisonProgress(delegation) {
     ["SCOPE", mandate.scopeFlexibility?.hookVariants ? "Agent optimizes variants" : `${mandate.brief?.hookVariants ?? 1} hooks`],
   ]));
   const scan = node("div", "comparison-scan");
-  for (const [index, name] of ["Creator Pitch", "Proof Demo", "Ranking / Listicle", "Two-person Podcast"].entries()) {
+  for (const [index, name] of ["Creator Pitch", "Product Showcase", "Ranking / Listicle", "Two-person Podcast"].entries()) {
     const item = node("div", "comparison-scan-item");
     item.style.setProperty("--scan-delay", `${index * 0.18}s`);
     item.append(node("span", "scan-dot"), node("strong", "", name), node("small", "", "Pricing scope and checking fit"));
@@ -432,30 +432,39 @@ const rejectionLabels = {
 
 const packageProfiles = {
   creator_pitch: {
-    outcome: "Creator-led selling",
-    difference: "One presenter-style pitch",
-    bestFor: "Direct response and launches",
+    format: "1 CREATOR",
+    outcome: "Direct pitch to camera",
+    difference: "Launch ads and direct response",
+    bestFor: "Launches and direct-response ads",
     basePriceSats: 900,
   },
   proof_demo: {
-    outcome: "Show the product in action",
-    difference: "Reference-guided product demo",
-    bestFor: "Feature proof and conversion",
+    displayName: "Product Showcase",
+    format: "PRODUCT-FIRST",
+    outcome: "Your product performs the reference actions",
+    difference: "Demos, feature proof, and conversion",
+    bestFor: "Product demonstrations and conversion",
     basePriceSats: 1300,
   },
   ranking_listicle: {
-    outcome: "Explain through a list",
-    difference: "Fixed presenter + 3 points",
-    bestFor: "Comparison and consideration",
+    format: "1 PRESENTER",
+    outcome: "Three reasons, ranked and explained",
+    difference: "Comparisons and consideration",
+    bestFor: "Comparisons and consideration",
     basePriceSats: 1600,
   },
   two_person_podcast: {
-    outcome: "Sell through conversation",
-    difference: "Two hosts + two voices",
-    bestFor: "Objections and social proof",
+    format: "2 HOSTS",
+    outcome: "Objections answered in conversation",
+    difference: "Trust and social proof",
+    bestFor: "Objections, trust, and social proof",
     basePriceSats: 2100,
   },
 };
+
+function productDisplayName(productId, fallback) {
+  return packageProfiles[productId]?.displayName ?? fallback;
+}
 
 function selectedPlanSummary(decision) {
   const quote = decision?.selected?.quote;
@@ -511,7 +520,7 @@ function planRecap(campaign) {
   const copy = node("div");
   copy.append(
     node("span", "plan-recap-label", "AGENT'S CHOICE"),
-    node("strong", "", decision.selected.productName),
+    node("strong", "", productDisplayName(decision.selected.productId, decision.selected.productName)),
     node("small", "", selectedPlanSummary(decision)),
     node("p", "", concise(decision.rationale, 220)),
   );
@@ -547,7 +556,7 @@ function renderDecision(delegation, { transient = false } = {}) {
   const bestCopy = node("div");
   bestCopy.append(
     node("span", "best-fit-label", "RECOMMENDED PURCHASE"),
-    node("h3", "", decision.selected.productName),
+    node("h3", "", productDisplayName(decision.selected.productId, decision.selected.productName)),
     node("strong", "best-fit-scope", selectedPlanSummary(decision)),
     node("p", "", concise(decision.rationale, 280)),
   );
@@ -617,7 +626,8 @@ function renderDecision(delegation, { transient = false } = {}) {
     );
     card.append(
       top,
-      node("h3", "", candidate.productName),
+      node("h3", "", productDisplayName(candidate.productId, candidate.productName)),
+      node("span", "package-format", profile.format ?? "VIDEO"),
       node("strong", "package-outcome", profile.outcome ?? "Campaign production"),
       node("small", "package-difference", profile.difference ?? candidate.scope?.summary ?? "Priced scope"),
       node("p", "package-verdict", packageStatus(candidate, decision)),
@@ -627,7 +637,7 @@ function renderDecision(delegation, { transient = false } = {}) {
   comparison.append(list);
   stageContent.append(comparison);
   if (!transient && delegation.state === "awaiting_purchase_confirmation") {
-    const confirm = node("button", "button confirm", `Approve ${decision.selected.productName} · ${decision.selected.quote.amountSats.toLocaleString()} sats`);
+    const confirm = node("button", "button confirm", `Approve ${productDisplayName(decision.selected.productId, decision.selected.productName)} · ${decision.selected.quote.amountSats.toLocaleString()} sats`);
     confirm.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/confirm-purchase`, {}));
     showActions(confirm);
   }
@@ -680,9 +690,16 @@ function renderProduction(delegation) {
   live.append(activity, copy, progress, meta);
   stageContent.append(live);
   stageContent.append(node("p", "production-wait-note", "You can keep this page open or return later. Your campaign continues safely in the background."));
-  if (campaign.lastError) stageContent.append(node("div", "notice", "Production paused before completion. You can safely retry the same order."));
+  if (campaign.lastError) {
+    const referenceOrder = Boolean(campaign.decision?.selected?.quote?.brief?.evidenceUrl);
+    const message = campaign.lastError.code === "reference_video_fetch_failed"
+      || (referenceOrder && campaign.lastError.code === "hypit_command_failed")
+      ? "The reference-video source could not be reached. Retry the same order—your payment and selections are preserved."
+      : "Production stopped before completion. Retry the same order—your payment and selections are preserved.";
+    stageContent.append(node("div", "notice", message));
+  }
   if (campaign.state === "fulfillment_failed") {
-    const retry = node("button", "button secondary", "Retry the existing paid fulfillment");
+    const retry = node("button", "button confirm", "Retry production · no new payment");
     retry.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/retry-fulfillment`, {}));
     const resolution = node("button", "button danger", "Request human resolution");
     resolution.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/request-resolution`, {
@@ -740,7 +757,7 @@ function renderPackage(delegation) {
     stageContent.append(download);
   }
   stageContent.append(dataGrid([
-    ["PACKAGE", campaignPackage.summary.selectedProduct.name],
+    ["PACKAGE", productDisplayName(campaignPackage.summary.selectedProduct.id, campaignPackage.summary.selectedProduct.name)],
     ["SPEND", `${campaignPackage.summary.spend.spentSats} sats`],
     ["REMAINING", `${campaignPackage.summary.spend.remainingBudgetSats} sats`],
   ]));

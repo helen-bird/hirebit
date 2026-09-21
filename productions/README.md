@@ -10,7 +10,7 @@ hackathon demonstration and do not imply Arduino endorsement.
 | Package | Target language | Voice and person | Duration | Final preview |
 | --- | --- | --- | ---: | --- |
 | Creator Pitch | en-US | Warm American-English female maker; fictional East Asian woman presenter | 16 s | `previews/final/creator-pitch.mp4` |
-| Proof Demo | zh-CN | Calm Mandarin female technical narrator; product-only, no presenter | 25 s | `previews/final/proof-demo.mp4` |
+| Product Showcase | zh-CN | Calm Mandarin female technical narrator; product-only, no presenter | 25 s | `previews/final/proof-demo.mp4` |
 | Ranking / Listicle | es-US | Energetic US-Spanish reviewer; fictional Latino maker | 20 s | `previews/final/ranking-listicle.mp4` |
 | Two-person Podcast | en-GB | Two distinct British voices; fictional woman engineer and man host | 25.5 s | `previews/final/two-person-podcast.mp4` |
 
@@ -86,7 +86,7 @@ Validated build IDs on 2026-09-18:
 | Package | Build ID | Outcome |
 | --- | --- | --- |
 | Creator Pitch | `bld_20260918T142107014Z_791555C34B` | complete |
-| Proof Demo | `bld_20260918T142143455Z_7DC3CB9BC5` | complete |
+| Product Showcase | `bld_20260918T142143455Z_7DC3CB9BC5` | complete |
 | Ranking / Listicle | `bld_20260920T115707801Z_A12ADE4674` | complete (`es-US` source update) |
 | Two-person Podcast | `bld_20260918T142607022Z_9256400EAB` | complete |
 
