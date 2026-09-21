@@ -430,22 +430,68 @@ const rejectionLabels = {
   production_variant_limit: "Requested output set is too large",
 };
 
-function candidateReason(candidate, selectedId) {
-  if (candidate.planId === selectedId) {
-    return `Best plan · ${candidate.scope?.summary ?? "priced scope"} · ${candidate.quote.estimatedTurnaroundMinutes} min`;
-  }
-  if (candidate.eligible) return `Meets the brief · ${candidate.quote.estimatedTurnaroundMinutes} min delivery`;
-  const reasons = candidate.rejections?.map((reason) => rejectionLabels[reason] ?? null).filter(Boolean) ?? [];
-  if (reasons.length > 0) return [...new Set(reasons)].join(" · ");
-  if (candidate.error?.message) return candidate.error.message;
-  return "Does not satisfy the approved brief";
-}
+const packageProfiles = {
+  creator_pitch: {
+    outcome: "Creator-led selling",
+    difference: "One presenter-style pitch",
+    bestFor: "Direct response and launches",
+    basePriceSats: 900,
+  },
+  proof_demo: {
+    outcome: "Show the product in action",
+    difference: "Reference-guided product demo",
+    bestFor: "Feature proof and conversion",
+    basePriceSats: 1300,
+  },
+  ranking_listicle: {
+    outcome: "Explain through a list",
+    difference: "Fixed presenter + 3 points",
+    bestFor: "Comparison and consideration",
+    basePriceSats: 1600,
+  },
+  two_person_podcast: {
+    outcome: "Sell through conversation",
+    difference: "Two hosts + two voices",
+    bestFor: "Objections and social proof",
+    basePriceSats: 2100,
+  },
+};
 
 function selectedPlanSummary(decision) {
   const quote = decision?.selected?.quote;
   if (!quote) return "";
   return decision.selected.scope?.summary
     ?? `${quote.addOns?.hookVariants ?? 1} hooks · ${(quote.addOns?.languages ?? []).join(" + ")} · ${(quote.addOns?.aspectRatios ?? []).join(" + ")}`;
+}
+
+function packageStatus(candidate, decision) {
+  if (candidate.productId === decision.selected.productId) return "BEST FIT";
+  if (candidate.eligible) return "ALSO FITS";
+  const reasons = candidate.rejections?.map((reason) => rejectionLabels[reason] ?? null).filter(Boolean) ?? [];
+  return reasons[0] ?? "NOT A FIT";
+}
+
+function selectionSignals(decision) {
+  const selected = decision.selected;
+  const quote = selected.quote;
+  const profile = packageProfiles[selected.productId];
+  const signals = [];
+  if (quote?.brief?.evidenceUrl && quote.product?.production?.referenceAdaptation === true) {
+    signals.push(["BRIEF MATCH", "Uses your product image and reference-video choreography"]);
+  } else if (profile) {
+    signals.push(["FORMAT MATCH", profile.bestFor]);
+  }
+  if ((quote?.addOns?.hookVariants ?? 1) > 1) {
+    signals.push(["TESTING VALUE", `${quote.addOns.hookVariants} hooks give the campaign multiple openings to test`]);
+  } else {
+    signals.push(["RIGHT-SIZED", "Buys only the output needed for this brief"]);
+  }
+  const budget = decision.budgetSats;
+  const spend = selected.totalAuthorizedSats ?? quote?.amountSats;
+  if (Number.isSafeInteger(budget) && Number.isSafeInteger(spend)) {
+    signals.push(["BUDGET FIT", `${spend.toLocaleString()} sats authorized · ${(budget - spend).toLocaleString()} sats kept`]);
+  }
+  return signals.slice(0, 3);
 }
 
 function concise(text, maxLength = 260) {
@@ -496,6 +542,7 @@ function renderDecision(delegation, { transient = false } = {}) {
     "The best plan within your budget",
     `${decision.plans?.length ?? decision.candidates.length} PLANS CHECKED · ${matched} ELIGIBLE`,
   ));
+  const decisionSpotlight = node("div", "decision-spotlight");
   const best = node("div", "best-fit-card");
   const bestCopy = node("div");
   bestCopy.append(
@@ -505,7 +552,15 @@ function renderDecision(delegation, { transient = false } = {}) {
     node("p", "", concise(decision.rationale, 280)),
   );
   best.append(bestCopy, node("strong", "best-fit-price", `${decision.selected.quote.amountSats.toLocaleString()} sats`));
-  stageContent.append(best);
+  const why = node("div", "selection-proof");
+  why.append(node("span", "selection-proof-label", "WHY THIS PLAN WON"));
+  for (const [label, value] of selectionSignals(decision)) {
+    const signal = node("div", "selection-signal");
+    signal.append(node("i", "", "✓"), node("span", "", label), node("strong", "", value));
+    why.append(signal);
+  }
+  decisionSpotlight.append(best, why);
+  stageContent.append(decisionSpotlight);
 
   const authorized = decision.selected.totalAuthorizedSats ?? decision.selected.quote.amountSats;
   const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
@@ -541,23 +596,36 @@ function renderDecision(delegation, { transient = false } = {}) {
   }
   if (tradeoffItems.length > 1) stageContent.append(tradeoffs);
 
-  const details = node("details", "package-checks");
-  details.append(node("summary", "comparison-label", "See all package checks"));
-  const list = node("div", "candidate-list");
+  const comparison = node("section", "package-comparison");
+  const comparisonHead = node("div", "package-comparison-head");
+  comparisonHead.append(
+    node("strong", "", "How the packages differ"),
+    node("small", "", "The agent checked format, capability, scope, price, and deadline"),
+  );
+  comparison.append(comparisonHead);
+  const list = node("div", "package-comparison-grid");
   for (const candidate of decision.candidates) {
     const selected = candidate.productId === decision.selected.productId;
-    const card = node("div", `candidate${selected ? " selected" : ""}${candidate.eligible ? "" : " rejected"}`);
-    const head = node("div", "candidate-head");
-    const status = selected ? "SELECTED" : candidate.eligible ? "MATCH" : "NOT A FIT";
-    const price = candidate.quote ? `${candidate.quote.amountSats.toLocaleString()} sats` : "—";
-    const result = node("div", "candidate-result");
-    result.append(node("span", "candidate-status", status), node("span", "price", price));
-    head.append(node("h3", "", candidate.productName), result);
-    card.append(head, node("small", "", candidateReason(candidate, decision.selected.planId)));
+    const profile = packageProfiles[candidate.productId] ?? {};
+    const card = node("article", `package-option${selected ? " selected" : ""}${candidate.eligible ? "" : " rejected"}`);
+    const top = node("div", "package-option-top");
+    top.append(
+      node("span", "package-option-status", selected ? "✓ SELECTED" : candidate.eligible ? "ELIGIBLE" : "NOT SELECTED"),
+      node("b", "", candidate.quote
+        ? `${candidate.quote.amountSats.toLocaleString()} sats`
+        : `from ${Number(profile.basePriceSats ?? 0).toLocaleString()} sats`),
+    );
+    card.append(
+      top,
+      node("h3", "", candidate.productName),
+      node("strong", "package-outcome", profile.outcome ?? "Campaign production"),
+      node("small", "package-difference", profile.difference ?? candidate.scope?.summary ?? "Priced scope"),
+      node("p", "package-verdict", packageStatus(candidate, decision)),
+    );
     list.append(card);
   }
-  details.append(list);
-  stageContent.append(details);
+  comparison.append(list);
+  stageContent.append(comparison);
   if (!transient && delegation.state === "awaiting_purchase_confirmation") {
     const confirm = node("button", "button confirm", `Approve ${decision.selected.productName} · ${decision.selected.quote.amountSats.toLocaleString()} sats`);
     confirm.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/confirm-purchase`, {}));
@@ -587,21 +655,31 @@ function renderPayment(delegation) {
 function renderProduction(delegation) {
   const campaign = delegation.campaign;
   const production = campaign.sellerOrder?.production ?? {};
-  const simulated = campaign.sellerOrder?.payment?.simulated === true;
-  stageContent.append(title("VIDEO PRODUCTION", simulated ? "Your campaign is being created" : "Payment unlocked production"));
+  const isProducing = production.state === "producing";
+  const turnaround = campaign.decision?.selected?.quote?.estimatedTurnaroundMinutes;
+  stageContent.append(title("VIDEO PRODUCTION", isProducing ? "Your campaign is being created" : "Production is getting ready"));
   const recap = planRecap(campaign);
   if (recap) stageContent.append(recap);
-  stageContent.append(dataGrid([
-    ["PAYMENT", campaign.sellerOrder?.payment?.authorization ?? "pending"],
-    ["PRODUCTION", production.state ?? "queued"],
-  ]));
-  const note = node("div", "payment-card");
-  const copy = node("div");
-  copy.append(node("h3", "", simulated ? "Preview authorization received" : "Payment is necessary"), node("p", "", simulated
-    ? "Hypit was unlocked by a preview receipt; no Bitcoin moved."
-    : "Hypit fulfillment remains locked until GoBTC reports status=paid."));
-  note.append(copy, node("div", "amount", "HYPIT"));
-  stageContent.append(note);
+  const live = node("section", `production-live${isProducing ? " active" : ""}`);
+  const activity = node("div", "production-activity");
+  activity.append(node("span", "production-spinner"), node("span", "production-live-label", isProducing ? "PRODUCTION IN PROGRESS" : "QUEUED FOR PRODUCTION"));
+  const copy = node("div", "production-live-copy");
+  copy.append(
+    node("h3", "", isProducing ? "Please wait — we’re making your video" : "Your production slot is ready"),
+    node("p", "", isProducing
+      ? "The reference is being translated into new product action, then assembled and checked by Hypit. This page refreshes automatically."
+      : "Production will begin automatically. No further action is needed."),
+  );
+  const progress = node("div", "production-progress");
+  progress.append(node("i"));
+  const meta = node("div", "production-meta");
+  meta.append(
+    node("span", "", isProducing ? "Creating · assembling · validating" : "Waiting to start"),
+    node("strong", "", Number.isSafeInteger(turnaround) ? `Estimate: up to ${turnaround} min` : "We’ll update this page when ready"),
+  );
+  live.append(activity, copy, progress, meta);
+  stageContent.append(live);
+  stageContent.append(node("p", "production-wait-note", "You can keep this page open or return later. Your campaign continues safely in the background."));
   if (campaign.lastError) stageContent.append(node("div", "notice", "Production paused before completion. You can safely retry the same order."));
   if (campaign.state === "fulfillment_failed") {
     const retry = node("button", "button secondary", "Retry the existing paid fulfillment");
