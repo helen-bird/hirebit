@@ -595,15 +595,16 @@ function decisionEvidence(campaign) {
   const grouped = new Map();
   for (const plan of plans) grouped.set(plan.productId, [...(grouped.get(plan.productId) ?? []), plan]);
   const packageItems = [...grouped.entries()].map(([productId, items]) => {
+    const profile = packageProfiles[productId] ?? {};
     const quoted = items.filter((item) => item.quote !== null);
     const prices = quoted.map((item) => item.totalAuthorizedSats ?? item.quote.amountSats);
-    const hooks = [...new Set(items.map((item) => item.scope?.hookVariants).filter(Number.isSafeInteger))].sort((a, b) => a - b);
+    const startingPrice = Number.isSafeInteger(profile.basePriceSats)
+      ? profile.basePriceSats
+      : prices.length ? Math.min(...prices) : null;
     return {
       title: productDisplayName(productId, items[0]?.productName),
-      meta: `${items.length} option${items.length === 1 ? "" : "s"} explored${hooks.length ? ` · ${hooks.join(", ")} hook${hooks.length === 1 && hooks[0] === 1 ? "" : "s"}` : ""}`,
-      detail: prices.length
-        ? `${Math.min(...prices).toLocaleString()}–${Math.max(...prices).toLocaleString()} sats depending on scope`
-        : "The requested combination was not available",
+      meta: `${profile.format ?? "VIDEO"} · ${startingPrice === null ? "priced to scope" : `from ${startingPrice.toLocaleString()} sats`}`,
+      detail: `${profile.outcome ?? "Campaign production"}. ${profile.bestFor ? `Best for ${profile.bestFor.toLowerCase()}.` : profile.difference ?? "Available for the right campaign brief."}`,
     };
   });
   const rankedItems = eligible.map((plan, index) => {
