@@ -272,7 +272,7 @@ test("commission compiler uses reference-guided Veo motion while retaining the b
     manifestSha256: "2".repeat(64),
     inputs: { productSha256, referenceSha256 },
     source: {
-      durationSeconds: 12.6,
+      durationSeconds: 12.606,
       frameRate: 10,
       boundaryTimes: [0, 2.362, 5.513, 7.25, 10.667, 12.6],
     },
@@ -317,6 +317,7 @@ test("commission compiler uses reference-guided Veo motion while retaining the b
   });
   assert.equal(manifest.referenceAdaptationSha256, referenceAdaptation.manifestSha256);
   assert.equal(manifest.videoInputSha256, generatedVideo.output.sha256);
+  assert.equal(manifest.deliverables[0].specification.durationSeconds, 12.6);
   const projectDir = join(input.jobDir, manifest.projectDirectory);
   const author = await readFile(join(projectDir, "author.svml"), "utf8");
   assert.equal((author.match(/reference-shot-[1-6]/gu) ?? []).length, 0);

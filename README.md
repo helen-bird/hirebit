@@ -64,6 +64,66 @@ The Buyer and Seller are separate services. The Seller owns pricing and producti
 Buyer owns customer intent, mandate enforcement and purchase-plan selection. This keeps a model-generated
 recommendation separate from the code that can authorize payment or start work.
 
+## How delegated purchasing works
+
+Hirebit deliberately separates **judgment** from **authority**. AI interprets what will create value
+for the customer; deterministic code decides which actions are permitted. A model can recommend a
+purchase, but it cannot change a price, expand a budget, grant itself authority or submit a payment.
+
+### AI decides what is worth buying
+
+The Buyer does not ask the model to choose one package from a marketing list. It constructs complete
+purchase plans across package, hook count, language, aspect ratio, price and turnaround, then evaluates
+the plans in stages:
+
+| Stage | Deterministic code | AI judgment | Resulting evidence |
+| --- | --- | --- | --- |
+| Interpret | Validates the schema and preserves authoritative UI choices | Extracts objective, audience, creative requirements, budget, deadline and authority | Versioned mandate |
+| Enumerate | Requests Seller catalog and quotes for every feasible package × scope combination | None—prices and capabilities come only from the Seller | Comparable plan matrix |
+| Filter | Rejects capability, format, deadline and customer-budget violations | Cannot restore an ineligible plan | Eligible plan set with rejection reasons |
+| Rank | Supplies only eligible plans and bounded decision factors | Assesses objective fit, creative fit, evidence quality and testing value | Ranked plans and concise rationale |
+| Select | Verifies the returned plan ID and recomputes all monetary checks | Chooses the least expensive plan that materially satisfies the objective | Selected plan plus cheaper/broader trade-offs |
+
+This ordering is the key design choice: AI contributes semantic judgment where rules are brittle, but
+never receives the ability to redefine the constraints it is judging inside.
+
+### Code controls the money
+
+The customer mandate is the first budget boundary. The Buyer then applies account-level limits and
+creates a durable spend reservation before an order can be issued. There is no separate per-order
+ceiling; an order is bounded by the customer's hard budget and by the remaining daily and lifetime
+allowances, which both default to 60,000 sats.
+
+| Control | Enforcement |
+| --- | --- |
+| Customer hard budget | The selected quote plus the maximum real-payment fee reserve must fit inside the confirmed mandate |
+| Daily and lifetime ceilings | Authorized spend and active reservations are summed transactionally before new spend is reserved |
+| Concurrent payments | Pending-payment limits prevent multiple workflows from racing for the same allocation |
+| Seller integrity | Product, quote ID, amount, recipient and expiry must match the accepted plan exactly |
+| Bitcoin transaction integrity | Recipient, change, inputs, outputs, fee and fee rate are checked before signing or submission |
+| Retry safety | Stable idempotency keys prevent duplicate orders; uncertain submissions are reconciled instead of blindly retried |
+
+Reservations are persisted before external execution and released on a definite pre-payment failure.
+After an uncertain submission they remain reserved until reconciliation, so a timeout cannot silently
+turn into a second spend.
+
+### Code controls the authority
+
+Authorization is explicit state, not model sentiment. Each confirmed mandate binds the approved scope,
+budget and purchase mode to a version and `scopeHash`.
+
+| Authorization mode or gate | What code permits |
+| --- | --- |
+| Autonomous | After the exact mandate is confirmed, the Buyer may purchase once within that scope and budget without asking again |
+| Confirm before purchase | The Buyer may compare and recommend, but cannot execute until the customer confirms the selected purchase |
+| Mandate revision | Any material clarification creates a new version; stale confirmations and hashes are rejected |
+| Payment gate | Seller production remains locked until the corresponding order has authorized payment evidence |
+| Public Demo | Startup fails unless payment mode is simulated; the public web path cannot submit real Bitcoin |
+
+Model output is always treated as untrusted data. JSON-schema validation, policy checks and state-machine
+guards sit between every AI recommendation and every side effect. The practical rule is simple:
+**AI proposes; code authorizes; durable evidence proves what happened.**
+
 ## Security by design
 
 Security controls are part of the transaction model, not a UI convention:
@@ -88,7 +148,9 @@ Security controls are part of the transaction model, not a UI convention:
   mounted. The host repository, wallet, Buyer state, Seller state and cloud credentials are absent.
 - **Bounded public demo.** The public profile permits simulated payment only, caps requests, input
   length, TTS characters and Veo reservations, and uses a rolling hourly task limit. Its access token
-  is a demo gate—not production authentication.
+  is a demo gate—not production authentication. The public profile permits 20 tasks per rolling hour.
+  There is no separate per-order ceiling: each order is bounded by its customer-authorized mandate,
+  while the default Buyer daily and lifetime ceilings are both 60,000 sats.
 - **Durable audit evidence.** Decisions, payment state and production manifests are persisted for
   recovery and verification, while low-level evidence files are intentionally hidden from the normal
   customer journey.

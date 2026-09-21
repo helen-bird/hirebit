@@ -60,6 +60,18 @@ test("public Demo quota reports when the oldest hourly slot reopens", () => {
   assert.equal(quota.retryAt, "2026-09-21T12:10:00.000Z");
 });
 
+test("public Demo supports the twenty-task rolling-hour default", () => {
+  const now = Date.parse("2026-09-21T12:00:00.000Z");
+  const delegations = Array.from({ length: 19 }, (_, index) => ({
+    state: "completed",
+    createdAt: new Date(now - ((index + 1) * 60_000)).toISOString(),
+  }));
+  const quota = publicDemoQuotaStatus(delegations, { maxDelegations: 20, now });
+  assert.equal(quota.used, 19);
+  assert.equal(quota.available, 1);
+  assert.equal(quota.exhausted, false);
+});
+
 test("product image inspection checks signature, declared type, and safe dimensions", () => {
   const png = Buffer.alloc(32);
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(png, 0);

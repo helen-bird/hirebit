@@ -10,10 +10,9 @@
     "ranking_listicle",
     "two_person_podcast"
   ],
-  "maxPerOrderSats": 3000,
-  "maxCampaignSats": 3000,
-  "maxDailySpendSats": 6000,
-  "maxLifetimeSpendSats": 6000,
+  "maxCampaignSats": 60000,
+  "maxDailySpendSats": 60000,
+  "maxLifetimeSpendSats": 60000,
   "maxPendingPayments": 1,
   "maxPaymentFeeSats": 500,
   "maxFeeRateSatVb": 50,

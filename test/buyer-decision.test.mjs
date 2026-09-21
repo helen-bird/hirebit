@@ -66,6 +66,27 @@ test("Buyer rejects a campaign budget above its autonomous spend ceiling", async
   );
 });
 
+test("Buyer can evaluate an order above 3000 sats when no separate per-order ceiling is configured", async () => {
+  class HighValueSeller extends CatalogSeller {
+    async createQuote(input) {
+      const quote = await super.createQuote(input);
+      return { ...quote, amountSats: 12000 };
+    }
+  }
+  const engine = new DecisionEngine({
+    seller: new HighValueSeller(),
+    policy: { ...policy, maxPerOrderSats: undefined, maxCampaignSats: 60000 },
+  });
+  const decision = await engine.evaluate({
+    objective: "conversion",
+    budgetSats: 15000,
+    scopeFlexibility: { hookVariants: false },
+  });
+  assert.equal(decision.selected.quote.amountSats, 12000);
+  assert.equal(decision.selected.eligible, true);
+  assert.equal(decision.selected.rejections.includes("per_order_policy_ceiling"), false);
+});
+
 test("Buyer filters packages by deliverable visual requirements before ranking", async () => {
   const engine = new DecisionEngine({ seller: new CatalogSeller(), policy });
   const decision = await engine.evaluate({

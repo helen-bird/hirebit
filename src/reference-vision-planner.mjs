@@ -15,6 +15,14 @@ const PLACEMENTS = new Set(["top", "center", "bottom"]);
 const EMPHASES = new Set(["hook", "feature", "action", "proof", "cta"]);
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
+const SUMMARY_LIMITS = Object.freeze({
+  category: 120,
+  uncertainty: 300,
+  visualGrammar: 500,
+  subjectFraming: 320,
+  typography: 320,
+  strategy: 500,
+});
 
 function cleanText(value, field, maximum) {
   if (typeof value !== "string") throw new AppError("reference_vision_invalid", `${field} must be a string`, 502);
@@ -23,6 +31,17 @@ function cleanText(value, field, maximum) {
     throw new AppError("reference_vision_invalid", `${field} must contain 1-${maximum} characters`, 502);
   }
   return normalized;
+}
+
+function cleanSummary(value, fallback, field, maximum) {
+  if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) {
+    return cleanText(fallback, field, maximum);
+  }
+  if (typeof value !== "string") return cleanText(value, field, maximum);
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  if (normalized.length <= maximum) return normalized;
+  const clipped = normalized.slice(0, maximum + 1).replace(/\s+\S*$/u, "").trim();
+  return clipped === "" ? normalized.slice(0, maximum) : clipped;
 }
 
 function cleanTextList(value, field, { minimum, maximum, itemMaximum }) {
@@ -62,27 +81,52 @@ export function validateReferenceVisionPlan(value) {
   }
   const normalized = {
     product: {
-      category: cleanText(product.category, "product.category", 80),
+      category: cleanSummary(product.category, "Supplied consumer product", "product.category", SUMMARY_LIMITS.category),
       observedFeatures: cleanTextList(product.observedFeatures, "product.observedFeatures", {
         minimum: 2, maximum: 6, itemMaximum: 100,
       }),
       visibleUses: cleanTextList(product.visibleUses, "product.visibleUses", {
         minimum: 1, maximum: 5, itemMaximum: 90,
       }),
-      uncertainty: cleanText(product.uncertainty, "product.uncertainty", 180),
+      uncertainty: cleanSummary(
+        product.uncertainty,
+        "Only visible product details are treated as verified.",
+        "product.uncertainty",
+        SUMMARY_LIMITS.uncertainty,
+      ),
     },
     reference: {
-      visualGrammar: cleanText(reference.visualGrammar, "reference.visualGrammar", 220),
-      subjectFraming: cleanText(reference.subjectFraming, "reference.subjectFraming", 160),
+      visualGrammar: cleanSummary(
+        reference.visualGrammar,
+        "Product-led vertical sequence with clear action beats and a final reveal.",
+        "reference.visualGrammar",
+        SUMMARY_LIMITS.visualGrammar,
+      ),
+      subjectFraming: cleanSummary(
+        reference.subjectFraming,
+        "Vertical close-up framing on the supplied product and generic hands or creator action.",
+        "reference.subjectFraming",
+        SUMMARY_LIMITS.subjectFraming,
+      ),
       actionSequence: cleanTextList(reference.actionSequence, "reference.actionSequence", {
         minimum: 2, maximum: 6, itemMaximum: 120,
       }),
       pacing: reference.pacing,
       transitionMoment: reference.transitionMoment,
-      typography: cleanText(reference.typography, "reference.typography", 160),
+      typography: cleanSummary(
+        reference.typography,
+        "Short, high-contrast captions timed to the action beats.",
+        "reference.typography",
+        SUMMARY_LIMITS.typography,
+      ),
     },
     adaptation: {
-      strategy: cleanText(adaptation.strategy, "adaptation.strategy", 260),
+      strategy: cleanSummary(
+        adaptation.strategy,
+        "Translate the reference rhythm into a new product-led sequence using only the supplied product evidence.",
+        "adaptation.strategy",
+        SUMMARY_LIMITS.strategy,
+      ),
       palette: cleanTextList(adaptation.palette, "adaptation.palette", {
         minimum: 3, maximum: 4, itemMaximum: 7,
       }).map((color, index) => hexColor(color, `adaptation.palette[${index}]`)),
@@ -150,29 +194,29 @@ function visionSchema() {
         type: "object", additionalProperties: false,
         required: ["category", "observedFeatures", "visibleUses", "uncertainty"],
         properties: {
-          category: shortString(80),
+          category: shortString(SUMMARY_LIMITS.category),
           observedFeatures: { type: "array", minItems: 2, maxItems: 6, items: shortString(100) },
           visibleUses: { type: "array", minItems: 1, maxItems: 5, items: shortString(90) },
-          uncertainty: shortString(180),
+          uncertainty: shortString(SUMMARY_LIMITS.uncertainty),
         },
       },
       reference: {
         type: "object", additionalProperties: false,
         required: ["visualGrammar", "subjectFraming", "actionSequence", "pacing", "transitionMoment", "typography"],
         properties: {
-          visualGrammar: shortString(220),
-          subjectFraming: shortString(160),
+          visualGrammar: shortString(SUMMARY_LIMITS.visualGrammar),
+          subjectFraming: shortString(SUMMARY_LIMITS.subjectFraming),
           actionSequence: { type: "array", minItems: 2, maxItems: 6, items: shortString(120) },
           pacing: { type: "string", enum: ["fast", "moderate", "slow"] },
           transitionMoment: { type: "number", minimum: 0, maximum: 1 },
-          typography: shortString(160),
+          typography: shortString(SUMMARY_LIMITS.typography),
         },
       },
       adaptation: {
         type: "object", additionalProperties: false,
         required: ["strategy", "palette", "narration", "shots"],
         properties: {
-          strategy: shortString(260),
+          strategy: shortString(SUMMARY_LIMITS.strategy),
           palette: { type: "array", minItems: 3, maxItems: 4, items: { type: "string", pattern: "^#[0-9A-Fa-f]{6}$" } },
           narration: shortString(120),
           shots: {

@@ -18,9 +18,12 @@ authorize or submit a Bitcoin payment.
   SameSite=Strict` cookie without placing it in an HTTP URL or committed file.
 - Browser writes require the configured HTTPS origin; the Buyer accepts only explicit hostnames.
 - Non-declined delegations, mutation frequency, request length, TTS characters and Veo reservations
-  are capped. The public task limit remains 3 per rolling hour; Veo permits 20 generation reservations
+  are capped. The public task limit is 20 per rolling hour; Veo separately permits 20 generation reservations
   per rolling hour and a reference-guided task consumes two. Reservations survive restart and uncertain
   provider submissions are not blindly retried.
+- There is no separate per-order ceiling. Every order remains bounded by its customer-authorized
+  mandate, while Buyer daily and lifetime ceilings are both 60,000 sats. The startup guard still
+  refuses public mode with real Bitcoin enabled.
 - Reference URLs are constrained to supported providers, revalidated through redirects and fetched
   into order-private storage. Required reference processing fails closed.
 - Direct campaign creation and mainnet payment are disabled in public mode.
@@ -36,7 +39,7 @@ Create an ignored `.env.public-demo` from `.env.public-demo.example` and fill in
 PUBLIC_DEMO_ORIGIN=https://<your-pages-project>.pages.dev
 PUBLIC_DEMO_ACCESS_TOKEN=<generate-a-random-demo-token>
 BUYER_ALLOWED_HOSTS=127.0.0.1,localhost,::1,<your-tunnel>.trycloudflare.com
-PUBLIC_DEMO_MAX_DELEGATIONS_PER_HOUR=3
+PUBLIC_DEMO_MAX_DELEGATIONS_PER_HOUR=20
 PUBLIC_DEMO_MAX_REQUEST_CHARS=1000
 PUBLIC_DEMO_MAX_MUTATIONS_PER_MINUTE=30
 ```

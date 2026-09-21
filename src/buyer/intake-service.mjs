@@ -223,6 +223,9 @@ function delegationState(campaign, authorizationMode) {
   if (campaign.state === "completed") return "completed";
   if (campaign.state === "cancelled") return "cancelled";
   if (campaign.state === "decision_failed") return "campaign_failed";
+  if (["spend_blocked", "order_failed", "payment_preparation_failed"].includes(campaign.state)) {
+    return "execution_paused";
+  }
   if (campaign.state === "decision_ready" && authorizationMode === "advisory_only") return "advisory_ready";
   if (campaign.state === "decision_ready" && authorizationMode === "confirm_before_purchase") {
     return "awaiting_purchase_confirmation";
@@ -451,6 +454,23 @@ export class IntakeService {
     if (delegation.campaignId === null) return delegation;
     const campaign = await this.buyer.syncCampaign(delegation.campaignId);
     return await this.#recordCampaign(delegationId, campaign, "campaign.synced");
+  }
+
+  async resumeDelegation(delegationId) {
+    const delegation = this.getDelegation(delegationId);
+    if (delegation.campaignId === null || delegation.campaign === null) {
+      throw new AppError("campaign_resume_not_expected", "This delegation has no campaign to resume", 409);
+    }
+    const resumable = new Set(["spend_blocked", "order_failed", "payment_preparation_failed"]);
+    if (!resumable.has(delegation.campaign.state)) {
+      throw new AppError(
+        "campaign_resume_not_expected",
+        `Cannot resume campaign from state: ${delegation.campaign.state}`,
+        409,
+      );
+    }
+    const campaign = await this.buyer.resumeCampaign(delegation.campaignId);
+    return await this.#recordCampaign(delegationId, campaign, "campaign.resume_requested");
   }
 
   async cancelDelegation(delegationId) {

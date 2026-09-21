@@ -53,7 +53,7 @@ class FakeExtractor {
 }
 
 class FakeBuyer {
-  constructor() { this.created = []; this.executed = 0; this.executionOptions = []; }
+  constructor() { this.created = []; this.executed = 0; this.executionOptions = []; this.resumed = 0; }
   async createCampaign({ input, idempotencyKey }) {
     this.created.push({ input, idempotencyKey });
     return {
@@ -68,6 +68,10 @@ class FakeBuyer {
     return { id, state: "completed", result: { artifacts: [{ name: "final.mp4" }] } };
   }
   async syncCampaign(id) { return { id, state: "decision_ready" }; }
+  async resumeCampaign(id) {
+    this.resumed += 1;
+    return { id, state: "completed", result: { artifacts: [{ name: "final.mp4" }] } };
+  }
 }
 
 async function fixture(values, options = {}) {
@@ -196,9 +200,31 @@ test("explicit automatic authorization becomes one upfront mandate approval", as
     mandateVersion: delegation.mandate.version,
     scopeHash: delegation.mandate.scopeHash,
   });
-  assert.equal(delegation.state, "campaign_active");
+  assert.equal(delegation.state, "execution_paused");
   assert.equal(buyer.created[0].input.autoExecute, true);
   assert.equal(buyer.created[0].input.budgetSats, 2500);
+});
+
+test("paused autonomous execution can resume without another purchase confirmation", async () => {
+  const automatic = extraction({
+    authorizationMode: "auto_within_budget",
+    autoAuthorizationExplicit: true,
+  });
+  const { service, buyer } = await fixture([automatic]);
+  let delegation = await service.createDelegation({
+    input: { request: "Automatically order the best Acme conversion video, never exceed 2500 sats." },
+    idempotencyKey: "delegation-autonomous-resume",
+  });
+  delegation = await service.confirmMandate(delegation.id, {
+    approved: true,
+    mandateVersion: delegation.mandate.version,
+    scopeHash: delegation.mandate.scopeHash,
+  });
+  assert.equal(delegation.state, "execution_paused");
+  delegation = await service.resumeDelegation(delegation.id);
+  assert.equal(delegation.state, "completed");
+  assert.equal(buyer.resumed, 1);
+  assert.equal(buyer.executed, 0);
 });
 
 test("chosen purchase authority suppresses duplicate model authorization questions", () => {

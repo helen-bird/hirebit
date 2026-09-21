@@ -33,6 +33,11 @@ const DURATIONS = Object.freeze({
 const MAX_AUDIO_TEMPO_RATE = 1.25;
 const AUDIO_TAIL_SECONDS = 0.4;
 const MULTI_VOICE_LEAD_SECONDS = 0.4;
+const VIDEO_FRAME_RATE = 30;
+
+function snapToVideoFrame(seconds) {
+  return Number((Math.round(seconds * VIDEO_FRAME_RATE) / VIDEO_FRAME_RATE).toFixed(6));
+}
 
 function productionTimelineSeconds(quote, referenceAdaptation) {
   if (referenceAdaptation !== null) {
@@ -40,9 +45,13 @@ function productionTimelineSeconds(quote, referenceAdaptation) {
     if (!Number.isFinite(sourceDuration) || sourceDuration <= 0) {
       throw new AppError("reference_adaptation_manifest_mismatch", "Reference adaptation has no valid source duration", 503);
     }
-    return Number(Math.min(16, Math.max(8, sourceDuration)).toFixed(3));
+    // Hypit's timeline author requires the program end to land exactly on a
+    // frame. ffprobe commonly reports values such as 12.606s, so copying the
+    // container duration verbatim can make an otherwise valid build fail.
+    return snapToVideoFrame(Math.min(16, Math.max(8, sourceDuration)));
   }
-  return DURATIONS[quote.product.id] ?? Math.max(1, Number(quote.product.durationSeconds?.[0] ?? 20));
+  return snapToVideoFrame(DURATIONS[quote.product.id]
+    ?? Math.max(1, Number(quote.product.durationSeconds?.[0] ?? 20)));
 }
 
 function sha256(bytes) {

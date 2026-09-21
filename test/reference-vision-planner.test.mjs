@@ -81,6 +81,37 @@ test("vision plan rejects unverified claims before authoring", () => {
   assert.throws(() => validateReferenceVisionPlan(plan), (error) => error.code === "reference_vision_unsupported_claim");
 });
 
+test("vision plan supplies a safe strategy when the model omits a non-critical summary", () => {
+  const plan = validPlan();
+  delete plan.adaptation.strategy;
+  const normalized = validateReferenceVisionPlan(plan);
+  assert.match(normalized.adaptation.strategy, /product-led sequence/u);
+});
+
+test("vision plan supplies safe presentation summaries when the model leaves them blank", () => {
+  const plan = validPlan();
+  plan.product.category = "";
+  plan.product.uncertainty = "";
+  plan.reference.visualGrammar = "";
+  plan.reference.subjectFraming = "";
+  plan.reference.typography = "";
+  const normalized = validateReferenceVisionPlan(plan);
+  assert.match(normalized.product.category, /consumer product/u);
+  assert.match(normalized.product.uncertainty, /visible product details/u);
+  assert.match(normalized.reference.visualGrammar, /Product-led vertical sequence/u);
+  assert.match(normalized.reference.subjectFraming, /Vertical close-up framing/u);
+  assert.match(normalized.reference.typography, /high-contrast captions/u);
+});
+
+test("vision plan safely clips an overlong non-critical presentation summary", () => {
+  const plan = validPlan();
+  plan.reference.visualGrammar = `${"action rhythm ".repeat(60)}final reveal`;
+  const normalized = validateReferenceVisionPlan(plan);
+  assert.ok(normalized.reference.visualGrammar.length <= 500);
+  assert.ok(normalized.reference.visualGrammar.length > 220);
+  assert.match(normalized.reference.visualGrammar, /action rhythm/u);
+});
+
 test("reference frame selection is ordered, bounded, and includes strong boundaries", () => {
   const times = selectReferenceSampleTimes(12.6, [{ at: 7.25, score: 0.9 }, { at: 10.667, score: 0.8 }], 8);
   assert.equal(times.length, 8);

@@ -13,7 +13,8 @@ const policy = {
   maxCampaignSats: 3000,
   defaultAutoExecute: false,
   pollIntervalMs: 5000,
-  maxDailySpendSats: 6000,
+  maxDailySpendSats: 60000,
+  maxLifetimeSpendSats: 60000,
   maxPendingPayments: 1,
   paymentsEnabled: true,
 };
@@ -35,6 +36,7 @@ class FakeSeller {
   constructor({ completed = true, orderAmountSats = 1300 } = {}) {
     this.created = 0;
     this.synced = 0;
+    this.retried = 0;
     this.completed = completed;
     this.orderAmountSats = orderAmountSats;
     this.origin = "http://seller.test";
@@ -76,6 +78,10 @@ class FakeSeller {
       payment: { id: "payment-1", authorization: "authorized", settlement: "pending", txids: [] },
       production: { state: "completed", result: { artifacts: [{ name: "final.mp4" }] } },
     };
+  }
+  async retryProduction() {
+    this.retried += 1;
+    return await this.syncOrder();
   }
 }
 
@@ -159,6 +165,34 @@ test("campaign is decision-only until autoExecute or explicit execute", async ()
   assert.equal(campaign.state, "decision_ready");
   assert.equal(seller.created, 0);
   assert.equal(wallet.submitted, 0);
+});
+
+test("fulfillment retry reconciles a Seller build that completed after Buyer timed out", async () => {
+  const { service, seller, store } = await fixture();
+  const campaign = await service.createCampaign({
+    input: { objective: "conversion", budgetSats: 3000 },
+    idempotencyKey: "buyer-campaign-late-completion",
+  });
+  await store.transaction((state) => {
+    const current = state.campaigns[campaign.id];
+    current.state = "fulfillment_failed";
+    current.sellerOrder = {
+      id: "order-1",
+      amountSats: 1300,
+      state: "fulfillment_failed",
+      payment: { id: "payment-1", authorization: "authorized", settlement: "pending" },
+      production: {
+        state: "failed",
+        error: { code: "seller_unavailable", message: "Seller request timed out" },
+      },
+    };
+    current.lastError = { code: "seller_unavailable", message: "Seller request timed out" };
+  });
+
+  const recovered = await service.retryFulfillment(campaign.id);
+  assert.equal(recovered.state, "completed");
+  assert.equal(seller.retried, 0);
+  assert.equal(seller.synced, 1);
 });
 
 test("delegated purchase confirmation cannot be bypassed through the Campaign endpoint", async () => {

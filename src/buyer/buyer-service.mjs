@@ -66,6 +66,10 @@ function activeReservation(reservation) {
   return reservation.status === undefined || ACTIVE_RESERVATION_STATES.has(reservation.status);
 }
 
+function exceedsConfiguredLimit(amountSats, limitSats) {
+  return Number.isSafeInteger(limitSats) && limitSats > 0 && amountSats > limitSats;
+}
+
 function validateSellerOrder(order, quote, campaign, policy, now) {
   if (!Number.isSafeInteger(order?.amountSats) || order.amountSats <= 0) {
     throw new AppError("seller_order_invalid", "Seller returned an invalid order amount", 502);
@@ -76,7 +80,8 @@ function validateSellerOrder(order, quote, campaign, policy, now) {
       orderAmountSats: order.amountSats,
     });
   }
-  if (order.amountSats > policy.maxPerOrderSats || order.amountSats > campaign.authorization.budgetSats) {
+  if (exceedsConfiguredLimit(order.amountSats, policy.maxPerOrderSats)
+    || order.amountSats > campaign.authorization.budgetSats) {
     throw new AppError("spend_not_authorized", "Seller order exceeds Buyer spend authorization", 403);
   }
   if (typeof order.payment?.id !== "string" || order.payment.id === "") {
@@ -139,7 +144,7 @@ export class BuyerService {
       policy: {
         version: this.policy.version,
         sellerOrigin: this.seller.origin,
-        maxPerOrderSats: this.policy.maxPerOrderSats,
+        maxPerOrderSats: this.policy.maxPerOrderSats ?? null,
         maxCampaignSats: this.policy.maxCampaignSats,
         maxDailySpendSats: this.policy.maxDailySpendSats,
         maxLifetimeSpendSats: this.policy.maxLifetimeSpendSats,
@@ -255,7 +260,18 @@ export class BuyerService {
     if (campaign.state !== "fulfillment_failed" || campaign.sellerOrder === null) {
       throw new AppError("fulfillment_retry_not_expected", "Only a failed paid fulfillment can be retried", 409);
     }
-    await this.seller.retryProduction(campaign.sellerOrder.id);
+
+    // The Seller request may have outlived Buyer's HTTP timeout. Reconcile the
+    // durable order first so a completed or still-running build is never
+    // mistaken for a reason to start production again.
+    const reconciled = await this.syncCampaign(campaignId);
+    if (reconciled.state !== "fulfillment_failed") return reconciled;
+    const productionError = reconciled.sellerOrder?.production?.error?.code;
+    if (reconciled.sellerOrder?.production?.state !== "failed"
+      || reconciled.lastError?.code !== productionError) {
+      return reconciled;
+    }
+    await this.seller.retryProduction(reconciled.sellerOrder.id);
     return await this.syncCampaign(campaignId);
   }
 
@@ -516,7 +532,8 @@ export class BuyerService {
     }
     const quote = campaign.decision?.selected?.quote;
     if (quote === undefined) throw new AppError("decision_missing", "Campaign has no selected quote", 409);
-    if (quote.amountSats > this.policy.maxPerOrderSats || quote.amountSats > campaign.authorization.budgetSats) {
+    if (exceedsConfiguredLimit(quote.amountSats, this.policy.maxPerOrderSats)
+      || quote.amountSats > campaign.authorization.budgetSats) {
       throw new AppError("spend_not_authorized", "Selected quote exceeds Buyer spend authorization", 403);
     }
     if (campaign.input.deadlineType !== "preferred" && campaign.input.deadlineAt !== undefined) {

@@ -426,6 +426,11 @@ export function createBuyerServer({
         json(response, 200, await intake.syncDelegation(decodeURIComponent(syncDelegationMatch[1])));
         return;
       }
+      const resumeDelegationMatch = url.pathname.match(/^\/v1\/delegations\/([^/]+)\/resume$/u);
+      if (method === "POST" && resumeDelegationMatch) {
+        json(response, 200, await intake.resumeDelegation(decodeURIComponent(resumeDelegationMatch[1])));
+        return;
+      }
       const cancelDelegationMatch = url.pathname.match(/^\/v1\/delegations\/([^/]+)\/cancel$/u);
       if (method === "POST" && cancelDelegationMatch) {
         json(response, 200, await intake.cancelDelegation(decodeURIComponent(cancelDelegationMatch[1])));

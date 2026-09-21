@@ -110,12 +110,12 @@ const publicDemo = publicDemoEnabled ? {
   publicOrigin: process.env.PUBLIC_DEMO_ORIGIN,
   maxDelegations: Number(process.env.PUBLIC_DEMO_MAX_DELEGATIONS_PER_HOUR
     ?? process.env.PUBLIC_DEMO_MAX_DELEGATIONS
-    ?? 3),
+    ?? 20),
   maxRequestChars: Number(process.env.PUBLIC_DEMO_MAX_REQUEST_CHARS ?? 1000),
   maxMutationsPerMinute: Number(process.env.PUBLIC_DEMO_MAX_MUTATIONS_PER_MINUTE ?? 30),
 } : { enabled: false };
-if (publicDemoEnabled && (!Number.isSafeInteger(publicDemo.maxDelegations) || publicDemo.maxDelegations < 1 || publicDemo.maxDelegations > 10)) {
-  throw new Error("PUBLIC_DEMO_MAX_DELEGATIONS_PER_HOUR must be an integer from 1 to 10");
+if (publicDemoEnabled && (!Number.isSafeInteger(publicDemo.maxDelegations) || publicDemo.maxDelegations < 1 || publicDemo.maxDelegations > 100)) {
+  throw new Error("PUBLIC_DEMO_MAX_DELEGATIONS_PER_HOUR must be an integer from 1 to 100");
 }
 if (publicDemoEnabled && (!Number.isSafeInteger(publicDemo.maxRequestChars) || publicDemo.maxRequestChars < 100 || publicDemo.maxRequestChars > 2000)) {
   throw new Error("PUBLIC_DEMO_MAX_REQUEST_CHARS must be an integer from 100 to 2000");

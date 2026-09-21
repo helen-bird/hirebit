@@ -16,12 +16,12 @@ const presets = {
   auto: {
     platform: "TikTok",
     purchaseMode: "auto_within_budget",
-    request: "Create a conversion-focused TikTok launch campaign for Tick cotton swabs, designed for makeup users who want precise, easy cleanup. Use an energetic United States English voice and product-led visuals. Choose the right number of opening hooks for launch testing. Keep spend under 2,000 sats and deliver within 60 minutes.",
+    request: "Create a conversion-focused TikTok launch campaign for Precision Beauty Swabs, designed for makeup users who want precise, easy cleanup. Use an energetic United States English voice and product-led visuals. Choose the right number of opening hooks for launch testing. Keep spend under 2,000 sats and deliver within 60 minutes.",
   },
   confirm: {
     platform: "TikTok",
     purchaseMode: "confirm_before_purchase",
-    request: "Create a conversion-focused TikTok launch campaign for Tick cotton swabs, designed for makeup users who want precise, easy cleanup. Use an energetic United States English voice and product-led visuals. Choose the right number of opening hooks for launch testing. Keep spend under 2,000 sats and deliver within 60 minutes.",
+    request: "Create a conversion-focused TikTok launch campaign for Precision Beauty Swabs, designed for makeup users who want precise, easy cleanup. Use an energetic United States English voice and product-led visuals. Choose the right number of opening hooks for launch testing. Keep spend under 2,000 sats and deliver within 60 minutes.",
   },
 };
 
@@ -268,6 +268,20 @@ function renderComparisonProgress(delegation) {
     ["SPEND CAP", `${mandate.budgetSats.toLocaleString()} sats`],
     ["SCOPE", mandate.scopeFlexibility?.hookVariants ? "Agent optimizes variants" : `${mandate.brief?.hookVariants ?? 1} hooks`],
   ]));
+  const journey = node("section", "decision-journey live", "");
+  const steps = [
+    ["01", "Mandate", "Goal, budget and authority locked", "done"],
+    ["02", "Enumerate", "Building package × scope plans", "active"],
+    ["03", "Filter", "Remove hard-constraint violations", "pending"],
+    ["04", "Rank", "AI judges value and fit", "pending"],
+    ["05", "Purchase", "Code verifies before execution", "pending"],
+  ];
+  for (const [number, label, detail, state] of steps) {
+    const step = node("article", `decision-step ${state}`);
+    step.append(node("span", "", number), node("strong", "", label), node("small", "", detail));
+    journey.append(step);
+  }
+  stageContent.append(journey);
   const scan = node("div", "comparison-scan");
   for (const [index, name] of ["Creator Pitch", "Product Showcase", "Ranking / Listicle", "Two-person Podcast"].entries()) {
     const item = node("div", "comparison-scan-item");
@@ -306,6 +320,7 @@ const stateLabels = {
   awaiting_purchase_confirmation: "READY TO BUY",
   creating_campaign: "COMPARING OPTIONS",
   campaign_active: "CAMPAIGN IN PROGRESS",
+  execution_paused: "ACTION NEEDED",
   completed: "CAMPAIGN READY",
   interpretation_failed: "TRY AGAIN",
 };
@@ -466,6 +481,12 @@ function productDisplayName(productId, fallback) {
   return packageProfiles[productId]?.displayName ?? fallback;
 }
 
+function customerCopy(value) {
+  return String(value ?? "")
+    .replace(/\bProof Demo\b/giu, "Product Showcase")
+    .replace(/\bproof_demo\b/gu, "Product Showcase");
+}
+
 function selectedPlanSummary(decision) {
   const quote = decision?.selected?.quote;
   if (!quote) return "";
@@ -504,10 +525,63 @@ function selectionSignals(decision) {
 }
 
 function concise(text, maxLength = 260) {
-  const value = String(text ?? "").replace(/\s+/gu, " ").trim();
+  const value = customerCopy(text).replace(/\s+/gu, " ").trim();
   if (value.length <= maxLength) return value;
   const clipped = value.slice(0, maxLength + 1).replace(/\s+\S*$/u, "");
   return `${clipped}…`;
+}
+
+function readableObjective(value) {
+  const text = String(value ?? "campaign").replace(/[_-]+/gu, " ").trim();
+  return text === "" ? "Campaign goal" : `${text[0].toUpperCase()}${text.slice(1)}`;
+}
+
+function decisionJourney(campaign, { compact = false } = {}) {
+  const decision = campaign?.decision;
+  if (!decision?.selected) return null;
+  const plans = decision.plans ?? decision.candidates ?? [];
+  const eligible = plans.filter((item) => item.eligible).length;
+  const packages = new Set(plans.map((item) => item.productId).filter(Boolean)).size;
+  const spend = decision.selected.totalAuthorizedSats ?? decision.selected.quote.amountSats;
+  const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats ?? spend;
+  const remaining = Math.max(0, budget - spend);
+  const aiRanked = decision.method === "deepseek_semantic";
+  const steps = [
+    ["01", "Mandate", `${readableObjective(decision.objective)} · ${budget.toLocaleString()}-sat cap`],
+    ["02", "Enumerate", `${plans.length} plans across ${packages} packages`],
+    ["03", "Filter", `${eligible} eligible · ${Math.max(0, plans.length - eligible)} blocked by hard rules`],
+    ["04", "Rank", aiRanked ? "AI compared fit, quality, cost and speed" : "Safe scoring compared fit, quality, cost and speed"],
+    ["05", "Purchase", `${productDisplayName(decision.selected.productId, decision.selected.productName)} · ${spend.toLocaleString()} sats · ${remaining.toLocaleString()} kept`],
+  ];
+  const section = node("section", `decision-journey${compact ? " compact" : ""}`);
+  section.setAttribute("aria-label", "How the agent chose and authorized the purchase");
+  for (const [number, label, detail] of steps) {
+    const step = node("article", "decision-step done");
+    step.append(node("span", "", number), node("strong", "", label), node("small", "", detail));
+    section.append(step);
+  }
+  return section;
+}
+
+function codeGuardrails(campaign) {
+  const decision = campaign?.decision;
+  if (!decision?.selected) return null;
+  const spend = decision.selected.totalAuthorizedSats ?? decision.selected.quote.amountSats;
+  const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats ?? spend;
+  const autonomous = campaign.authorization?.autoExecute === true;
+  const guardrails = node("section", "code-guardrails");
+  guardrails.append(node("div", "code-guardrails-title", "CODE ENFORCED THE BOUNDARIES"));
+  const items = [
+    ["AUTHORITY", autonomous ? "One autonomous purchase inside the confirmed mandate" : "Purchase waits for the customer’s explicit confirmation"],
+    ["BUDGET", `${spend.toLocaleString()} sats is inside the ${budget.toLocaleString()}-sat hard cap`],
+    ["PAYMENT", "Exact quote and recipient must match; the same order cannot pay twice"],
+  ];
+  for (const [label, detail] of items) {
+    const item = node("article");
+    item.append(node("span", "", "LOCKED"), node("strong", "", label), node("small", "", detail));
+    guardrails.append(item);
+  }
+  return guardrails;
 }
 
 function planRecap(campaign) {
@@ -535,6 +609,8 @@ function planRecap(campaign) {
   if (cheaper) noteParts.push(`lower-cost option ${cheaper.totalAuthorizedSats.toLocaleString()} sats`);
   if (broader) noteParts.push(`${broader.withinBudget === false ? "next scope exceeds budget" : "more output available"}`);
   recap.append(node("div", "plan-recap-note", noteParts.join(" · ")));
+  const journey = decisionJourney(campaign, { compact: true });
+  if (journey) recap.append(journey);
   return recap;
 }
 
@@ -551,6 +627,8 @@ function renderDecision(delegation, { transient = false } = {}) {
     "The best plan within your budget",
     `${decision.plans?.length ?? decision.candidates.length} PLANS CHECKED · ${matched} ELIGIBLE`,
   ));
+  const journey = decisionJourney(campaign);
+  if (journey) stageContent.append(journey);
   const decisionSpotlight = node("div", "decision-spotlight");
   const best = node("div", "best-fit-card");
   const bestCopy = node("div");
@@ -585,6 +663,8 @@ function renderDecision(delegation, { transient = false } = {}) {
   track.append(fill);
   meter.append(meterHead, track, node("small", "", `${Math.max(0, budget - authorized).toLocaleString()} sats remain available`));
   stageContent.append(meter);
+  const guardrails = codeGuardrails(campaign);
+  if (guardrails) stageContent.append(guardrails);
 
   const tradeoffs = node("div", "tradeoff-grid");
   const tradeoffItems = [
@@ -660,6 +740,32 @@ function renderPayment(delegation) {
   stageContent.append(card);
   if (simulated) stageContent.append(node("div", "notice neutral", "PREVIEW MODE · Authorization is exercised; no Bitcoin moves."));
   if (campaign.lastError) stageContent.append(node("div", "notice", "Payment needs attention. The agent will keep checking safely."));
+}
+
+function renderExecutionPaused(delegation) {
+  const campaign = delegation.campaign;
+  const errorCode = campaign?.lastError?.code;
+  const allowanceReached = ["daily_spend_limit", "lifetime_spend_limit"].includes(errorCode);
+  stageContent.append(title(
+    "AUTOMATIC PURCHASE PAUSED",
+    allowanceReached ? "The preview allowance needs to reset" : "The order needs another attempt",
+  ));
+  const recap = planRecap(campaign);
+  if (recap) stageContent.append(recap);
+  stageContent.append(node(
+    "div",
+    "notice",
+    allowanceReached
+      ? "The agent selected the plan automatically, but the shared preview allowance blocked authorization. No payment was made."
+      : "The agent selected the plan automatically, but could not finish authorization. No duplicate payment will be created.",
+  ));
+  const retry = node("button", "button confirm", "Retry automatic purchase");
+  retry.addEventListener("click", async () => {
+    retry.disabled = true;
+    retry.textContent = "Retrying…";
+    await act(`/v1/delegations/${encodeURIComponent(delegation.id)}/resume`, {});
+  });
+  showActions(retry);
 }
 
 function renderProduction(delegation) {
@@ -782,6 +888,10 @@ function render(delegation) {
   else if (delegation.state === "clarification_required") renderQuestions(delegation);
   else if (delegation.state === "approval_required") renderMandate(delegation);
   else if (["advisory_ready", "awaiting_purchase_confirmation"].includes(delegation.state)) renderDecision(delegation);
+  else if (delegation.state === "execution_paused"
+    || ["spend_blocked", "order_failed", "payment_preparation_failed"].includes(delegation.campaign?.state)) {
+    renderExecutionPaused(delegation);
+  }
   else if (delegation.state === "completed" || stageFor(delegation) === "package") renderPackage(delegation);
   else if (stageFor(delegation) === "payment") renderPayment(delegation);
   else if (stageFor(delegation) === "production") renderProduction(delegation);
@@ -840,7 +950,7 @@ async function loadRecent() {
 
 function schedulePoll(delegation) {
   clearTimeout(pollTimer);
-  if (["completed", "cancelled", "declined", "clarification_required", "approval_required", "awaiting_purchase_confirmation", "advisory_ready", "interpretation_failed", "campaign_failed"].includes(delegation.state)) return;
+  if (["completed", "cancelled", "declined", "clarification_required", "approval_required", "awaiting_purchase_confirmation", "advisory_ready", "execution_paused", "interpretation_failed", "campaign_failed"].includes(delegation.state)) return;
   pollTimer = setTimeout(async () => {
     try {
       const next = delegation.campaignId

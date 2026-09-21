@@ -203,7 +203,11 @@ export class DecisionEngine {
         const quote = await this.seller.createQuote(requested);
         const totalAuthorizedSats = quote.amountSats + feeReserveSats;
         const rejections = [];
-        if (quote.amountSats > this.policy.maxPerOrderSats) rejections.push("per_order_policy_ceiling");
+        if (Number.isSafeInteger(this.policy.maxPerOrderSats)
+          && this.policy.maxPerOrderSats > 0
+          && quote.amountSats > this.policy.maxPerOrderSats) {
+          rejections.push("per_order_policy_ceiling");
+        }
         if (totalAuthorizedSats > request.budgetSats) rejections.push("campaign_budget");
         if (remainingDeadlineMinutes !== undefined
           && request.deadlineType !== "preferred"
