@@ -1017,18 +1017,20 @@ function renderPayment(delegation) {
   const campaign = delegation.campaign;
   const payment = campaign.sellerOrder?.payment ?? {};
   const simulated = payment.simulated === true || campaign.paymentAttempt?.receipt?.simulated === true;
-  stageContent.append(title(simulated ? "PAYMENT PREVIEW" : "BITCOIN PAYMENT", "Authorizing the selected package"));
+  stageContent.append(title(simulated ? "SIMULATED GOBTC SETTLEMENT" : "BITCOIN PAYMENT", "Authorizing the selected package"));
   const recap = planRecap(campaign);
   if (recap) stageContent.append(recap);
   const card = node("div", "payment-card");
   const copy = node("div");
   copy.append(node("h3", "", payment.authorization === "authorized"
-    ? (simulated ? "Preview authorized" : "Payment authorized")
-    : (simulated ? "Awaiting preview authorization" : "Awaiting GoBTC")));
-  copy.append(node("p", "", "The agent is securely authorizing the selected package."));
+    ? (simulated ? "Simulated settlement authorized" : "Payment authorized")
+    : (simulated ? "Awaiting simulated settlement" : "Awaiting GoBTC")));
+  copy.append(node("p", "", simulated
+    ? "Hirebit is exercising the same order, authorization, and fulfillment gates while GoBTC is unavailable."
+    : "The agent is securely authorizing the selected package."));
   card.append(copy, node("div", "amount", `${campaign.sellerOrder?.amountSats ?? campaign.decision?.selected.quote.amountSats ?? 0} sats`));
   stageContent.append(card);
-  if (simulated) stageContent.append(node("div", "notice neutral", "PREVIEW MODE · Authorization is exercised; no Bitcoin moves."));
+  if (simulated) stageContent.append(node("div", "notice neutral", "GOBTC SERVICE UNAVAILABLE · Provider responses are simulated. No Bitcoin moves and no txid is claimed."));
   if (campaign.lastError) stageContent.append(node("div", "notice", "Payment needs attention. The agent will keep checking safely."));
 }
 
@@ -1133,7 +1135,7 @@ function renderPackage(delegation) {
   stageContent.append(title(
     "CAMPAIGN READY",
     campaignPackage.summary.subject ?? "Campaign package",
-    `${campaignPackage.summary.spend.spentSats} SATS ${simulated ? "PREVIEWED" : "SPENT"}`,
+    `${campaignPackage.summary.spend.spentSats} SATS ${simulated ? "SIMULATED" : "SPENT"}`,
   ));
   if (campaign.decision?.selected) {
     const recap = planRecap(campaign);
@@ -1156,6 +1158,7 @@ function renderPackage(delegation) {
     ["PACKAGE", productDisplayName(campaignPackage.summary.selectedProduct.id, campaignPackage.summary.selectedProduct.name)],
     ["SPEND", `${campaignPackage.summary.spend.spentSats} sats`],
     ["REMAINING", `${campaignPackage.summary.spend.remainingBudgetSats} sats`],
+    ["PAYMENT", simulated ? "Simulated GoBTC · no Bitcoin" : "Bitcoin mainnet"],
   ]));
 }
 
@@ -1260,10 +1263,10 @@ async function readiness() {
     if (box) {
       box.classList.toggle("degraded", !status.ready);
       box.querySelector("span:last-child").textContent = status.ready
-        ? (simulated ? "Preview ready" : "All systems ready")
+        ? (simulated ? "Simulated GoBTC ready" : "All systems ready")
         : "Setup incomplete";
     }
-    document.querySelector('[data-stage="payment"] b').textContent = simulated ? "Preview" : "Bitcoin";
+    document.querySelector('[data-stage="payment"] b').textContent = simulated ? "Simulated" : "Bitcoin";
     document.querySelector('[data-stage="payment"] small').textContent = "Authorize";
   } catch {
     if ($("#readiness")) $("#readiness").classList.add("degraded");

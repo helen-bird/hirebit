@@ -75,6 +75,25 @@ decision acceptance, budget utilization, time-to-campaign and output quality. La
 10 paid jobs, mainnet settlement, contribution margin and a second capability Seller before making
 broader market or ROI claims.
 
+## GoBTC Demo Day payment status
+
+Fresh requests on 2026-09-21 to `POST /instant/wallet/register` and
+`POST /merchant/auth/register` returned an nginx HTTP 503 response instead of the documented JSON.
+The organizers confirmed in the official Discord that this matches the outage on their side, that
+recovery should not be assumed before Demo Day, and that clearly disclosed simulated responses are
+acceptable for the presentation while the real integration remains in place.
+
+Hirebit therefore changes only the external payment-provider boundary in Demo mode. The same Buyer
+mandate, budget reservation, package selection, Seller order, idempotency, payment gate, production
+and delivery workflow still runs. `PAYMENT_MODE=gobtcpay` selects the real merchant and instant-wallet
+clients; `PAYMENT_MODE=demo` selects interface-compatible simulated clients with explicit
+`simulated: true` and `mainnet: false` evidence, a non-payable recipient marker and no PSBT, private
+key, GoBTC request, Bitcoin transfer or transaction ID.
+
+This demonstrates the implemented Buyer–Seller purchasing and fulfillment workflow through the
+payment boundary. It does **not** claim successful GoBTC wallet registration, merchant onboarding,
+mainnet submission, settlement or on-chain proof.
+
 ## System design
 
 ```text
@@ -289,7 +308,8 @@ docs/            operations, acceptance and threat-model documentation
 ## Known limits
 
 - This is a single-operator reference implementation, not a hardened multi-tenant SaaS deployment.
-- GoBTC availability and funding are external operational dependencies.
+- GoBTC wallet and merchant registration were blocked by the organizer-confirmed HTTP 503 outage on
+  2026-09-21. Demo mode exercises the implemented payment boundary but is not mainnet evidence.
 - A reference video guides generic action choreography and structure; Hirebit does not reproduce the
   source person's identity or promise pixel-identical cloning.
 - Reference-guided output uses two continuous Veo segments and follows the source duration within an

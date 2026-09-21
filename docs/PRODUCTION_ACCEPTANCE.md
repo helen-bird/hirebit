@@ -88,12 +88,16 @@ Cartesian compiler tests, the 30-video ceiling and strict post-delivery validati
 evidence. Runtime availability remains fail-closed and also requires the image-bound worker proof,
 DeepSeek credentials, approved Google TTS/ADC configuration and the GoBTC merchant configuration.
 
-GoBTC merchant and Buyer wallet onboarding were still blocked by an nginx HTTP 503 on 2026-09-20.
-The optional `PAYMENT_MODE=demo` rail is therefore Hackathon presentation scaffolding only. It is
-explicitly non-mainnet, creates no PSBT or chain transaction, never satisfies GoBTC acceptance, and
-must not be cited as payment integration evidence. It exists solely to exercise the already-real
-authorization gates, Hypit production, validation and campaign packaging while the external service
-is unavailable.
+Fresh GoBTC merchant and Buyer wallet registration attempts were still blocked by an nginx HTTP 503
+on 2026-09-21. The organizers confirmed in the official Discord that the failure matches their side,
+is not expected to recover before Demo Day, and may be represented with clearly disclosed simulated
+responses while the real integration remains unchanged.
+
+`PAYMENT_MODE=demo` therefore replaces only the external provider boundary with interface-compatible
+simulated clients. It exercises the implemented mandate, budget reservation, order, idempotency,
+payment gate, Hypit production, validation and campaign packaging flow. It is explicitly non-mainnet,
+uses a non-payable recipient marker, creates no real PSBT or chain transaction, and must not be cited
+as evidence of successful GoBTC registration, mainnet submission, settlement or on-chain proof.
 
 Credential/API validation completed on 2026-09-20 in the operator-selected Google Cloud project:
 Billing and Cloud Text-to-Speech are enabled, ADC is authenticated, and
