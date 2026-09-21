@@ -88,7 +88,7 @@ async function audioQuality(path, file, stream) {
   };
 }
 
-async function visualQuality(path, file, duration) {
+async function visualQuality(path, file, duration, { maxContinuousFreezeSeconds = null } = {}) {
   const log = await analyze(path, [
     "-loglevel", "info", "-i", path,
     "-map", "0:v:0", "-vf", "blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-50dB:d=2",
@@ -96,14 +96,18 @@ async function visualQuality(path, file, duration) {
   ]);
   const blackSeconds = [...log.matchAll(/black_duration:([0-9]+(?:\.[0-9]+)?)/gu)]
     .reduce((sum, match) => sum + Number(match[1]), 0);
-  let freezeSeconds = [...log.matchAll(/freeze_duration:\s*([0-9]+(?:\.[0-9]+)?)/gu)]
-    .reduce((sum, match) => sum + Number(match[1]), 0);
+  const freezeDurations = [...log.matchAll(/freeze_duration:\s*([0-9]+(?:\.[0-9]+)?)/gu)]
+    .map((match) => Number(match[1]));
+  let freezeSeconds = freezeDurations.reduce((sum, value) => sum + value, 0);
+  let longestFreezeSeconds = freezeDurations.length === 0 ? 0 : Math.max(...freezeDurations);
   const freezeStarts = [...log.matchAll(/freeze_start:\s*([0-9]+(?:\.[0-9]+)?)/gu)].map((match) => Number(match[1]));
   const freezeEnds = [...log.matchAll(/freeze_end:\s*([0-9]+(?:\.[0-9]+)?)/gu)].map((match) => Number(match[1]));
   const lastStart = freezeStarts.at(-1);
   const lastEnd = freezeEnds.at(-1);
   if (lastStart !== undefined && (lastEnd === undefined || lastStart > lastEnd)) {
-    freezeSeconds += Math.max(0, duration - lastStart);
+    const trailingFreeze = Math.max(0, duration - lastStart);
+    freezeSeconds += trailingFreeze;
+    longestFreezeSeconds = Math.max(longestFreezeSeconds, trailingFreeze);
   }
   const blackRatio = Math.min(1, blackSeconds / duration);
   const freezeRatio = Math.min(1, freezeSeconds / duration);
@@ -117,11 +121,20 @@ async function visualQuality(path, file, duration) {
       file: file.name, freezeSeconds: Number(freezeSeconds.toFixed(3)), duration,
     });
   }
+  if (Number.isFinite(maxContinuousFreezeSeconds) && maxContinuousFreezeSeconds > 0
+    && longestFreezeSeconds > maxContinuousFreezeSeconds) {
+    throw new AppError("deliverable_video_static_hold", "Reference-guided video contains an overlong static hold", 502, {
+      file: file.name,
+      longestFreezeSeconds: Number(longestFreezeSeconds.toFixed(3)),
+      maximumSeconds: maxContinuousFreezeSeconds,
+    });
+  }
   return {
     blackSeconds: Number(blackSeconds.toFixed(3)),
     blackRatio: Number(blackRatio.toFixed(4)),
     freezeSeconds: Number(freezeSeconds.toFixed(3)),
     freezeRatio: Number(freezeRatio.toFixed(4)),
+    longestFreezeSeconds: Number(longestFreezeSeconds.toFixed(3)),
   };
 }
 
@@ -152,17 +165,21 @@ export async function validateCampaignDeliverables({ files, quote }) {
     const stream = details.streams?.find((item) => item.codec_type === "video");
     const audioStream = details.streams?.find((item) => item.codec_type === "audio");
     const duration = Number(details.format?.duration);
-    if (!stream || !Number.isFinite(duration) || duration < minimumDuration - 1 || duration > maximumDuration + 1) {
+    const specification = file.specification ?? {};
+    const specifiedDuration = Number(specification.durationSeconds);
+    const expectedDuration = Number.isFinite(specifiedDuration) && specifiedDuration > 0
+      ? [specifiedDuration, specifiedDuration]
+      : [minimumDuration, maximumDuration];
+    if (!stream || !Number.isFinite(duration) || duration < expectedDuration[0] - 1 || duration > expectedDuration[1] + 1) {
       throw new AppError("deliverable_spec_mismatch", "Delivered video duration or stream does not match the purchased package", 502, {
         file: file.name,
         duration: Number.isFinite(duration) ? duration : null,
-        expectedDurationSeconds: [minimumDuration, maximumDuration],
+        expectedDurationSeconds: expectedDuration,
       });
     }
     if (audioStream === undefined) {
       throw new AppError("deliverable_audio_missing", "Delivered video has no audio stream", 502, { file: file.name });
     }
-    const specification = file.specification ?? {};
     const aspectRatio = specification.aspectRatio ?? (aspectRatios.length === 1 ? aspectRatios[0] : null);
     const language = specification.language ?? (languages.length === 1 ? languages[0] : null);
     const hookIndex = specification.hookIndex ?? (hookVariants === 1 ? 1 : null);
@@ -199,7 +216,9 @@ export async function validateCampaignDeliverables({ files, quote }) {
     contentDigests.set(digest, file.name);
     const [audio, visual] = await Promise.all([
       audioQuality(file.absolutePath, file, audioStream),
-      visualQuality(file.absolutePath, file, duration),
+      visualQuality(file.absolutePath, file, duration, {
+        maxContinuousFreezeSeconds: Number(specification.maxContinuousFreezeSeconds),
+      }),
     ]);
     file.validation = {
       durationSeconds: duration,
@@ -220,6 +239,9 @@ export async function validateCampaignDeliverables({ files, quote }) {
     expectedVideos,
     validatedVideos: videos.length,
     coverage: [...coverage],
-    qualityChecks: ["audio_stream", "audibility", "black_frame_ratio", "freeze_ratio", "duplicate_content"],
+    qualityChecks: [
+      "audio_stream", "audibility", "black_frame_ratio", "freeze_ratio",
+      "continuous_static_hold", "duplicate_content",
+    ],
   };
 }

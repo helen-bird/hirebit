@@ -1,13 +1,27 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
+
+import ffmpegStatic from "ffmpeg-static";
 
 import { GoogleVeoVideoProvider } from "../src/google-veo-video-provider.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const execFileAsync = promisify(execFile);
+
+async function generatedVideoBytes(root, color = "magenta") {
+  const path = join(root, `${color}.mp4`);
+  await execFileAsync(ffmpegStatic, [
+    "-nostdin", "-y", "-f", "lavfi", "-i", "testsrc2=size=180x320:rate=24:duration=8",
+    "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", path,
+  ]);
+  return await readFile(path);
+}
 
 async function setup() {
   const root = await mkdtemp(join(tmpdir(), "google-veo-provider-"));
@@ -88,15 +102,15 @@ async function referenceGuidance(input) {
   };
 }
 
-test("Google Veo provider submits once, persists the operation, and reuses the bound output", async () => {
+test("Google Veo provider submits two continuous reference segments and reuses the bound output", async () => {
   const input = await setup();
-  const generatedBytes = Buffer.alloc(12_000, 7);
+  const generatedBytes = await generatedVideoBytes(input.root);
   const calls = [];
   const provider = new GoogleVeoVideoProvider({
     projectId: "project-test",
     enabled: true,
     commercialUseApproved: true,
-    maxGenerations: 1,
+    maxGenerations: 2,
     ledgerFile: join(input.root, "seller", "veo-ledger.json"),
     tokenProvider: async () => "private-token",
     sleepImpl: async () => {},
@@ -118,8 +132,10 @@ test("Google Veo provider submits once, persists the operation, and reuses the b
   }, referenceAdaptation });
   assert.equal(manifest.provider, "google-vertex-veo");
   assert.equal(manifest.referenceAdaptationSha256, referenceAdaptation.manifestSha256);
-  assert.equal(manifest.output.sha256, sha256(generatedBytes));
-  assert.equal(calls.length, 2);
+  assert.equal(manifest.generationCount, 2);
+  assert.equal(manifest.segments.length, 2);
+  assert.equal(manifest.segments[0].sha256, sha256(generatedBytes));
+  assert.equal(calls.length, 4);
   assert.equal(calls[0].options.headers.authorization, "Bearer private-token");
   const body = JSON.parse(calls[0].options.body);
   assert.equal(body.parameters.durationSeconds, 8);
@@ -128,13 +144,16 @@ test("Google Veo provider submits once, persists the operation, and reuses the b
   assert.equal(body.instances[0].prompt.includes("http"), false);
   assert.match(body.instances[0].prompt, /Bring one cotton swab into frame beside the eye/u);
   assert.match(body.instances[0].prompt, /do not reproduce or identify the source person/u);
+  const continuationBody = JSON.parse(calls[2].options.body);
+  assert.match(continuationBody.instances[0].prompt, /Continue seamlessly/u);
+  assert.notEqual(continuationBody.instances[0].image.bytesBase64Encoded, body.instances[0].image.bytesBase64Encoded);
 
   const again = await provider.prepare({ ...input, productionInputs: {
     variants: [{ headline: "See the useful detail" }],
   }, referenceAdaptation });
   assert.deepEqual(again, manifest);
-  assert.equal(calls.length, 2);
-  assert.deepEqual(await readFile(manifest.output.path), generatedBytes);
+  assert.equal(calls.length, 4);
+  assert.ok((await readFile(manifest.output.path)).length > 10_000);
 });
 
 test("Google Veo provider fails closed after an uncertain submission", async () => {
@@ -173,7 +192,7 @@ test("Google Veo hourly reservation cap releases reservations older than one hou
       old_order: { reservedAt: "2026-09-21T09:00:00.000Z", model: "veo-3.1-lite-generate-001" },
     },
   }));
-  const generatedBytes = Buffer.alloc(12_000, 9);
+  const generatedBytes = await generatedVideoBytes(input.root, "teal");
   const provider = new GoogleVeoVideoProvider({
     projectId: "project-test",
     enabled: true,
@@ -195,5 +214,5 @@ test("Google Veo hourly reservation cap releases reservations older than one hou
   assert.equal(manifest.output.sha256, sha256(generatedBytes));
   const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
   assert.ok(ledger.entries.old_order);
-  assert.ok(ledger.entries[input.order.id]);
+  assert.ok(ledger.entries[`${input.order.id}:segment-1`]);
 });

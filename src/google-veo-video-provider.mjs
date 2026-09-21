@@ -4,6 +4,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
+import ffmpegStatic from "ffmpeg-static";
+
 import { AppError } from "./errors.mjs";
 import { REFERENCE_VISION_PLAN_FORMAT, validateReferenceVisionPlan } from "./reference-vision-planner.mjs";
 
@@ -57,7 +59,7 @@ export class GoogleVeoVideoProvider {
     gcloudPath = "gcloud",
     enabled = false,
     commercialUseApproved = false,
-    maxGenerations = 3,
+    maxGenerations = 20,
     generationWindowMs = DEFAULT_GENERATION_WINDOW_MS,
     ledgerFile,
     fetchImpl = fetch,
@@ -91,8 +93,8 @@ export class GoogleVeoVideoProvider {
     if (!this.commercialUseApproved) issues.push("Google Veo commercial use has not been approved");
     if (!this.projectId) issues.push("Google Cloud project is missing");
     if (this.model !== ALLOWED_MODEL) issues.push("Google Veo model is not allowlisted");
-    if (!Number.isSafeInteger(this.maxGenerations) || this.maxGenerations < 1 || this.maxGenerations > 10) {
-      issues.push("Google Veo generation cap must be 1-10");
+    if (!Number.isSafeInteger(this.maxGenerations) || this.maxGenerations < 1 || this.maxGenerations > 100) {
+      issues.push("Google Veo generation cap must be 1-100");
     }
     if (!Number.isSafeInteger(this.generationWindowMs) || this.generationWindowMs < 60_000) {
       issues.push("Google Veo generation window must be at least one minute");
@@ -107,6 +109,7 @@ export class GoogleVeoVideoProvider {
       generationWindowMinutes: Math.round(this.generationWindowMs / 60_000),
       sampleCount: 1,
       durationSeconds: 8,
+      referenceGenerationCount: 2,
       resolution: "720p",
       generateAudio: false,
       issue: issues[0] ?? null,
@@ -118,7 +121,6 @@ export class GoogleVeoVideoProvider {
     if (!readiness.configured) throw new AppError("google_veo_unavailable", readiness.issue, 503);
     const outputRoot = join(jobDir, "veo-inputs");
     const manifestPath = join(outputRoot, "manifest.json");
-    const receiptPath = join(outputRoot, "receipt.json");
     const outputPath = join(outputRoot, "product-motion.mp4");
     await mkdir(outputRoot, { recursive: true, mode: 0o700 });
 
@@ -163,6 +165,9 @@ export class GoogleVeoVideoProvider {
     const product = safeText(quote.brief?.productName ?? quote.brief?.subject, "the supplied product", 100);
     const objective = safeText(quote.brief?.description ?? quote.brief?.objective, "show the product clearly in use", 220);
     const headline = safeText(productionInputs?.variants?.[0]?.headline, "See the useful detail", 100);
+    const referenceSplitAt = referencePlan === null
+      ? 0
+      : Math.max(1, Math.ceil(referencePlan.reference.actionSequence.length / 2));
     const demonstration = referencePlan === null
       ? (quote.product.id === "proof_demo"
         ? "Show a clean hands-only demonstration with no visible face or presenter."
@@ -170,7 +175,7 @@ export class GoogleVeoVideoProvider {
       : [
         "Use a newly generated generic adult actor or hands; do not reproduce or identify the source person.",
         `Reusable subject framing: ${safeText(referencePlan.reference.subjectFraming, "product-focused creator framing", 160)}.`,
-        `Reusable action choreography: ${referencePlan.reference.actionSequence
+        `First-half reusable action choreography: ${referencePlan.reference.actionSequence.slice(0, referenceSplitAt)
           .map((action, index) => `${index + 1}) ${safeText(action, "show the product", 120)}`).join(" ")}`,
         `Editing grammar: ${safeText(referencePlan.reference.visualGrammar, "product reveal and demonstration", 220)}.`,
         `Pacing: ${referencePlan.reference.pacing}; main transition near ${Math.round(referencePlan.reference.transitionMoment * 100)}% of the clip.`,
@@ -179,22 +184,120 @@ export class GoogleVeoVideoProvider {
     const prompt = [
       "Create an eight-second vertical social-commerce product video from the supplied real product image.",
       `Product: ${product}. Campaign goal: ${objective}. Creative hook: ${headline}.`,
-      `Start with a clean macro product reveal. ${demonstration} Finish with a stable product hero pose.`,
+      `Start with a clean macro product reveal. ${demonstration} ${referencePlan === null
+        ? "Finish with a stable product hero pose."
+        : "Complete only this first-half choreography and end on a natural moving pose that can continue into the next shot; do not perform the final reveal yet."}`,
       "Preserve the supplied product's visible materials, colors, proportions, packaging, and distinctive physical details.",
       "Use warm natural indoor light, subtle handheld creator movement, realistic hands, and shallow depth of field.",
       "Do not copy the source person's face, body, clothing, identity, or likeness. Do not invent brand claims, logos, labels, captions, price text, watermarks, extra products, duplicate hands, or floating objects. Keep the lower third clean for later Hypit graphics.",
     ].join(" ").slice(0, 2_500);
-    const promptSha256 = sha256(Buffer.from(prompt));
+    const firstPath = referencePlan === null ? outputPath : join(outputRoot, "product-motion-1.mp4");
+    const first = await this.#generateSegment({
+      order,
+      quote,
+      commissionSha256,
+      referenceAdaptationSha256,
+      segmentIndex: 1,
+      prompt,
+      image,
+      imageMediaType: source.mediaType,
+      imageSha256: source.sha256,
+      outputRoot,
+      outputPath: firstPath,
+    });
+    const segments = [first];
+    if (referencePlan !== null) {
+      const continuationFrame = join(outputRoot, "continuation-frame.jpg");
+      await this.#extractContinuationFrame(firstPath, continuationFrame);
+      const continuationImage = await readFile(continuationFrame);
+      const actions = referencePlan.reference.actionSequence;
+      const remainingActions = actions.slice(referenceSplitAt);
+      const continuationPrompt = [
+        "Continue seamlessly from this exact first frame for eight seconds as the second half of the same vertical social-commerce video.",
+        `Keep the same newly generated generic adult creator or hands, lighting, framing, and the same ${product}.`,
+        `Complete the remaining reusable choreography: ${remainingActions.length === 0
+          ? "finish the product interaction and reveal"
+          : remainingActions.map((action, index) => `${index + 1}) ${safeText(action, "show the product", 120)}`).join(" ")}.`,
+        `Keep ${referencePlan.reference.pacing} pacing and follow the adaptation direction: ${safeText(referencePlan.adaptation.strategy, "finish the product reveal", 260)}.`,
+        "End on a short moving product reveal suitable for a call to action; do not hold a static frame.",
+        "Do not copy the source person's identity or likeness. Do not add logos, claims, captions, watermarks, extra products, duplicate hands, or floating objects.",
+      ].join(" ").slice(0, 2_500);
+      const secondPath = join(outputRoot, "product-motion-2.mp4");
+      segments.push(await this.#generateSegment({
+        order,
+        quote,
+        commissionSha256,
+        referenceAdaptationSha256,
+        segmentIndex: 2,
+        prompt: continuationPrompt,
+        image: continuationImage,
+        imageMediaType: "image/jpeg",
+        imageSha256: sha256(continuationImage),
+        outputRoot,
+        outputPath: secondPath,
+      }));
+      await this.#concatenateSegments(segments.map((item) => item.path), outputPath);
+    }
+    const bytes = await readFile(outputPath);
+    const promptSha256 = sha256(Buffer.from(segments.map((item) => item.promptSha256).join(":")));
+    const manifest = {
+      format: FORMAT,
+      orderId: order.id,
+      productId: quote.product.id,
+      commissionSha256,
+      inputImageSha256: source.sha256,
+      referenceAdaptationSha256,
+      provider: this.provider,
+      model: this.model,
+      promptSha256,
+      generationCount: segments.length,
+      segments: segments.map(({ path, ...item }) => ({ ...item, path })),
+      output: {
+        path: outputPath,
+        mediaType: "video/mp4",
+        sha256: sha256(bytes),
+        bytes: bytes.length,
+        durationSeconds: 8 * segments.length,
+        aspectRatio: "9:16",
+        resolution: "720p",
+        sampleCount: 1,
+        generateAudio: false,
+      },
+    };
+    await writeJsonAtomic(manifestPath, manifest);
+    return manifest;
+  }
 
+  async #generateSegment({
+    order, quote, commissionSha256, referenceAdaptationSha256, segmentIndex,
+    prompt, image, imageMediaType, imageSha256, outputRoot, outputPath,
+  }) {
+    const receiptPath = join(outputRoot, `receipt-${segmentIndex}.json`);
+    const promptSha256 = sha256(Buffer.from(prompt));
     let receipt = await readJson(receiptPath);
+    if (receipt !== null && (receipt.segmentIndex !== segmentIndex || receipt.promptSha256 !== promptSha256
+      || receipt.inputImageSha256 !== imageSha256 || receipt.commissionSha256 !== commissionSha256)) {
+      throw new AppError("google_veo_receipt_mismatch", "Persisted Veo segment is not bound to this generation request", 503);
+    }
+    if (receipt?.status === "succeeded") {
+      const bytes = await readFile(outputPath);
+      if (sha256(bytes) !== receipt.outputSha256) {
+        throw new AppError("google_veo_output_digest_mismatch", "Persisted Veo segment changed after generation", 503);
+      }
+      return {
+        index: segmentIndex, path: outputPath, mediaType: "video/mp4", sha256: receipt.outputSha256,
+        bytes: bytes.length, durationSeconds: 8, promptSha256, receiptSha256: sha256(await readFile(receiptPath)),
+      };
+    }
     if (receipt === null) {
-      await this.#reserve(order.id);
+      await this.#reserve(`${order.id}:segment-${segmentIndex}`, order.id, segmentIndex);
       receipt = {
         format: FORMAT,
         orderId: order.id,
         productId: quote.product.id,
+        segmentIndex,
         commissionSha256,
-        inputImageSha256: source.sha256,
+        inputImageSha256: imageSha256,
         referenceAdaptationSha256,
         model: this.model,
         promptSha256,
@@ -207,7 +310,7 @@ export class GoogleVeoVideoProvider {
         submitted = await this.#request("predictLongRunning", {
           instances: [{
             prompt,
-            image: { bytesBase64Encoded: image.toString("base64"), mimeType: source.mediaType },
+            image: { bytesBase64Encoded: image.toString("base64"), mimeType: imageMediaType },
           }],
           parameters: {
             aspectRatio: "9:16",
@@ -240,9 +343,8 @@ export class GoogleVeoVideoProvider {
       throw new AppError("google_veo_submission_uncertain", "Veo submission outcome is uncertain; automatic resubmission is disabled", 503);
     }
     if (typeof receipt.operationName !== "string" || receipt.operationName === "") {
-      throw new AppError("google_veo_receipt_invalid", "Veo receipt has no operation id", 503);
+      throw new AppError("google_veo_receipt_invalid", "Veo segment receipt has no operation id", 503);
     }
-
     const deadline = this.clock() + this.maxWaitMs;
     let result;
     while (this.clock() < deadline) {
@@ -261,32 +363,37 @@ export class GoogleVeoVideoProvider {
     receipt.completedAt = new Date(this.clock()).toISOString();
     receipt.outputSha256 = sha256(bytes);
     await writeJsonAtomic(receiptPath, receipt);
-    const receiptBytes = await readFile(receiptPath);
-    const manifest = {
-      format: FORMAT,
-      orderId: order.id,
-      productId: quote.product.id,
-      commissionSha256,
-      inputImageSha256: source.sha256,
-      referenceAdaptationSha256,
-      provider: this.provider,
-      model: this.model,
-      promptSha256,
-      receiptSha256: sha256(receiptBytes),
-      output: {
-        path: outputPath,
-        mediaType: "video/mp4",
-        sha256: sha256(bytes),
-        bytes: bytes.length,
-        durationSeconds: 8,
-        aspectRatio: "9:16",
-        resolution: "720p",
-        sampleCount: 1,
-        generateAudio: false,
-      },
+    return {
+      index: segmentIndex, path: outputPath, mediaType: "video/mp4", sha256: receipt.outputSha256,
+      bytes: bytes.length, durationSeconds: 8, promptSha256, receiptSha256: sha256(await readFile(receiptPath)),
     };
-    await writeJsonAtomic(manifestPath, manifest);
-    return manifest;
+  }
+
+  async #extractContinuationFrame(videoPath, imagePath) {
+    try {
+      await execute(ffmpegStatic, [
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-sseof", "-0.042", "-i", videoPath, "-frames:v", "1", "-q:v", "2", imagePath,
+      ], { timeout: 120_000, maxBuffer: 2 * 1024 * 1024 });
+    } catch (error) {
+      throw new AppError("google_veo_continuation_frame_failed", "Could not prepare the second Veo generation input", 503, { cause: error.message });
+    }
+  }
+
+  async #concatenateSegments(paths, outputPath) {
+    const temporary = `${outputPath}.tmp-${process.pid}.mp4`;
+    try {
+      await execute(ffmpegStatic, [
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", paths[0], "-i", paths[1],
+        "-filter_complex", "[0:v]setpts=PTS-STARTPTS[v0];[1:v]setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[v]",
+        "-map", "[v]", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart", temporary,
+      ], { timeout: 180_000, maxBuffer: 2 * 1024 * 1024 });
+      await rename(temporary, outputPath);
+    } catch (error) {
+      throw new AppError("google_veo_segment_assembly_failed", "Could not assemble the two Veo generations", 503, { cause: error.message });
+    }
   }
 
   async #token() {
@@ -323,13 +430,13 @@ export class GoogleVeoVideoProvider {
     return payload;
   }
 
-  async #reserve(orderId) {
+  async #reserve(reservationId, orderId, segmentIndex) {
     await mkdir(dirname(resolve(this.ledgerFile)), { recursive: true, mode: 0o700 });
     const ledger = await readJson(this.ledgerFile, { format: LEDGER_FORMAT, entries: {} });
     if (ledger.format !== LEDGER_FORMAT || ledger.entries === null || typeof ledger.entries !== "object") {
       throw new AppError("google_veo_ledger_invalid", "Google Veo usage ledger is invalid", 503);
     }
-    if (ledger.entries[orderId] !== undefined) return;
+    if (ledger.entries[reservationId] !== undefined) return;
     const cutoff = this.clock() - this.generationWindowMs;
     const recentReservations = Object.values(ledger.entries).filter((entry) => {
       const reservedAt = Date.parse(entry?.reservedAt);
@@ -344,7 +451,9 @@ export class GoogleVeoVideoProvider {
         retryAt,
       });
     }
-    ledger.entries[orderId] = { reservedAt: new Date(this.clock()).toISOString(), model: this.model };
+    ledger.entries[reservationId] = {
+      reservedAt: new Date(this.clock()).toISOString(), model: this.model, orderId, segmentIndex,
+    };
     await writeJsonAtomic(this.ledgerFile, ledger);
   }
 }

@@ -307,7 +307,14 @@ test("HypitAdapter compiles a paid commission and verifies the Build receipt", a
   assert.match(result.commissionReceipt.productionInputs.variants[0].timing.compiledAudio[0].sha256, /^[a-f0-9]{64}$/u);
   assert.equal(result.artifacts.length, 2);
   assert.deepEqual(result.artifacts.map((item) => item.specification), [
-    { hookIndex: 1, language: "en-US", aspectRatio: "9:16" },
+    {
+      hookIndex: 1,
+      language: "en-US",
+      aspectRatio: "9:16",
+      durationSeconds: 20,
+      referenceGuided: false,
+      maxContinuousFreezeSeconds: null,
+    },
     { kind: "input_source_manifest" },
   ]);
 });

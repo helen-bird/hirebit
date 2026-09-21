@@ -34,6 +34,17 @@ const MAX_AUDIO_TEMPO_RATE = 1.25;
 const AUDIO_TAIL_SECONDS = 0.4;
 const MULTI_VOICE_LEAD_SECONDS = 0.4;
 
+function productionTimelineSeconds(quote, referenceAdaptation) {
+  if (referenceAdaptation !== null) {
+    const sourceDuration = Number(referenceAdaptation.source?.durationSeconds);
+    if (!Number.isFinite(sourceDuration) || sourceDuration <= 0) {
+      throw new AppError("reference_adaptation_manifest_mismatch", "Reference adaptation has no valid source duration", 503);
+    }
+    return Number(Math.min(16, Math.max(8, sourceDuration)).toFixed(3));
+  }
+  return DURATIONS[quote.product.id] ?? Math.max(1, Number(quote.product.durationSeconds?.[0] ?? 20));
+}
+
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -380,10 +391,10 @@ function assetDeclaration(tag, id, asset, mediaType) {
 
 function authorSource({
   quote, variants, receipt, sourceManifest, productAsset, productExtent, presenterAsset, presenterExtent,
-  motionAsset, variantProductions, referenceAdaptation, referenceShotAssets,
+  motionAsset, variantProductions, referenceAdaptation, referenceShotAssets, timelineSeconds,
 }) {
   const productId = quote.product.id;
-  const duration = DURATIONS[productId] ?? Math.max(1, Number(quote.product.durationSeconds?.[0] ?? 20));
+  const duration = timelineSeconds;
   const declaredAudio = [...new Map([...variantProductions.values()].flatMap((production) => (
     production.audioAssets.map((asset) => [asset.id, asset])
   ))).values()];
@@ -606,8 +617,7 @@ export async function compileCommissionProject({
   }
   const variantProductions = new Map();
   const allAudioAssets = [];
-  const timelineSeconds = DURATIONS[paidQuote.product.id]
-    ?? Math.max(1, Number(paidQuote.product.durationSeconds?.[0] ?? 20));
+  const timelineSeconds = productionTimelineSeconds(paidQuote, referenceAdaptation);
   if (productionInputs !== null) {
     if (productionInputs.orderId !== order.id || productionInputs.productId !== quote.product.id
       || productionInputs.commissionSha256 !== commissionSha256 || typeof productionInputs.manifestSha256 !== "string") {
@@ -697,7 +707,12 @@ export async function compileCommissionProject({
       output: `video-${key}.video`,
       filename: `${filenamePart(quote.product.id)}-${key}.mp4`,
       mediaType: "video/mp4",
-      specification: { ...variant },
+      specification: {
+        ...variant,
+        durationSeconds: timelineSeconds,
+        referenceGuided: referenceAdaptation !== null,
+        maxContinuousFreezeSeconds: referenceAdaptation === null ? null : 2,
+      },
     };
   });
   const receipt = {
@@ -743,6 +758,12 @@ export async function compileCommissionProject({
       sha256: motionAsset.sha256,
       durationSeconds: motionAsset.durationSeconds,
       mediaType: motionAsset.mediaType,
+      generationCount: generatedVideo?.generationCount ?? 1,
+      segments: (generatedVideo?.segments ?? []).map((item) => ({
+        index: item.index,
+        sha256: item.sha256,
+        durationSeconds: item.durationSeconds,
+      })),
     },
     referenceAdaptation: referenceAdaptation === null ? null : {
       provider: referenceAdaptation.provider,
@@ -759,7 +780,9 @@ export async function compileCommissionProject({
       pacing: referenceAdaptation.plan.reference.pacing,
       transitionMoment: referenceAdaptation.plan.reference.transitionMoment,
       strategy: referenceAdaptation.plan.adaptation.strategy,
-      renderMode: motionAsset === null ? "hypit-image-shots" : "veo-guided-motion",
+      renderMode: motionAsset === null ? "hypit-image-shots" : (generatedVideo?.generationCount === 2
+        ? "veo-two-segment-continuation"
+        : "veo-guided-motion"),
       renderedShots: (motionAsset === null ? referenceShotTimeline(referenceAdaptation.plan, timelineSeconds) : []).map((shot) => ({
         start: shot.start,
         end: shot.end,
@@ -786,7 +809,7 @@ export async function compileCommissionProject({
   ]);
   const author = authorSource({
     quote: paidQuote, variants, receipt, sourceManifest, productAsset, productExtent, presenterAsset,
-    presenterExtent, motionAsset, variantProductions, referenceAdaptation, referenceShotAssets,
+    presenterExtent, motionAsset, variantProductions, referenceAdaptation, referenceShotAssets, timelineSeconds,
   });
   const targets = [...outputs.map((item) => item.output), "commission-receipt", ...(sourceManifest === null ? [] : ["input-source-manifest"])];
   const run = `<?svml using="@hypit/run-markup@1"?>

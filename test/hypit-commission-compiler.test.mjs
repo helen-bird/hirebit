@@ -286,7 +286,7 @@ test("commission compiler uses reference-guided Veo motion while retaining the b
   const videoPath = join(veoDirectory, "product-motion.mp4");
   await mkdir(veoDirectory, { recursive: true });
   await execFileAsync(ffmpegStatic, [
-    "-nostdin", "-y", "-f", "lavfi", "-i", "color=c=magenta:s=720x1280:d=8:r=30",
+    "-nostdin", "-y", "-f", "lavfi", "-i", "color=c=magenta:s=720x1280:d=16:r=30",
     "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", videoPath,
   ]);
   const videoBytes = await readFile(videoPath);
@@ -297,28 +297,40 @@ test("commission compiler uses reference-guided Veo motion while retaining the b
     commissionSha256,
     provider: "google-vertex-veo",
     model: "veo-3.1-lite-generate-001",
+    generationCount: 2,
+    segments: [1, 2].map((index) => ({
+      index,
+      sha256: `${index}`.repeat(64),
+      durationSeconds: 8,
+    })),
     output: {
       path: videoPath,
       mediaType: "video/mp4",
       sha256: createHash("sha256").update(videoBytes).digest("hex"),
-      durationSeconds: 8,
+      durationSeconds: 16,
     },
   };
 
-  const manifest = await compileCommissionProject({ rootDir, ...input, generatedVideo, referenceAdaptation });
+  const productionInputs = await inputsWithNarration(input, 10);
+  const manifest = await compileCommissionProject({
+    rootDir, ...input, generatedVideo, referenceAdaptation, productionInputs,
+  });
   assert.equal(manifest.referenceAdaptationSha256, referenceAdaptation.manifestSha256);
   assert.equal(manifest.videoInputSha256, generatedVideo.output.sha256);
   const projectDir = join(input.jobDir, manifest.projectDirectory);
   const author = await readFile(join(projectDir, "author.svml"), "utf8");
   assert.equal((author.match(/reference-shot-[1-6]/gu) ?? []).length, 0);
   assert.match(author, /generated-motion/u);
+  assert.doesNotMatch(author, /product-endcard/u);
+  assert.match(author, /end="12\.6s"/u);
   assert.doesNotMatch(author, /presenter-shot/u);
   const receiptSource = await readFile(join(projectDir, "receipt.svs"), "utf8");
   const encodedReceipt = receiptSource.match(/text: "([^"]+)";/u)?.[1];
   const receipt = decodeHypitTextJson(encodedReceipt);
   assert.equal(receipt.referenceAdaptation.sourceVideoSha256, referenceSha256);
   assert.equal(receipt.referenceAdaptation.productImageSha256, productSha256);
-  assert.equal(receipt.referenceAdaptation.renderMode, "veo-guided-motion");
+  assert.equal(receipt.videoGeneration.generationCount, 2);
+  assert.equal(receipt.referenceAdaptation.renderMode, "veo-two-segment-continuation");
   assert.equal(receipt.referenceAdaptation.renderedShots.length, 0);
   assert.equal(receipt.referenceAdaptation.actionSequence.length, 3);
   await execFileAsync(join(rootDir, "vendor/hypit/hypit"), [

@@ -96,7 +96,7 @@ test("production inputs generate once per hook-language and remain stable across
     visualMode: "package_default",
     voiceRequirements: [{ role: "narrator", style: "energetic", pace: "fast", accent: "US English" }],
   });
-  assert.deepEqual(Object.keys(copyCalls[0]).sort(), ["assetMetadata", "brief", "hookCount", "languages", "objectives", "productId", "productName"]);
+  assert.deepEqual(Object.keys(copyCalls[0]).sort(), ["assetMetadata", "brief", "hookCount", "languages", "objectives", "productId", "productName", "targetDurationSeconds"]);
   assert.equal(JSON.stringify(copyCalls[0]).includes("never-send"), false);
   assert.equal(JSON.stringify(copyCalls[0]).includes("private.example"), false);
   assert.equal(JSON.stringify(copyCalls[0]).includes("/private/order"), false);

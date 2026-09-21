@@ -24,6 +24,7 @@ async function render(kind) {
   const path = join(directory, `${kind}.mp4`);
   const visual = kind === "black" ? "color=c=black:size=320x568:rate=24:duration=3"
     : kind === "frozen" ? "color=c=blue:size=320x568:rate=24:duration=3"
+      : kind === "static-tail" ? "testsrc2=size=320x568:rate=24:duration=1,tpad=stop_mode=clone:stop_duration=2"
       : "testsrc2=size=320x568:rate=24:duration=3";
   const args = ["-nostdin", "-y", "-f", "lavfi", "-i", visual];
   if (kind !== "no-audio") {
@@ -82,6 +83,16 @@ test("media validator rejects predominantly black or frozen video", async () => 
   await assert.rejects(
     validateCampaignDeliverables({ files: [file(frozen)], quote: quote() }),
     (error) => error.code === "deliverable_video_frozen",
+  );
+});
+
+test("reference-guided delivery rejects a continuous static hold over its stricter limit", async () => {
+  const path = await render("static-tail");
+  const input = file(path);
+  input.specification.maxContinuousFreezeSeconds = 1.5;
+  await assert.rejects(
+    validateCampaignDeliverables({ files: [input], quote: quote() }),
+    (error) => error.code === "deliverable_video_static_hold",
   );
 });
 

@@ -79,7 +79,7 @@ const videoProvider = new GoogleVeoVideoProvider({
   gcloudPath: process.env.GOOGLE_CLOUD_CLI_PATH ?? "gcloud",
   enabled: process.env.GOOGLE_VEO_ENABLED === "1",
   commercialUseApproved: process.env.GOOGLE_VEO_COMMERCIAL_USE_APPROVED === "1",
-  maxGenerations: Number(process.env.GOOGLE_VEO_MAX_GENERATIONS ?? 3),
+  maxGenerations: Number(process.env.GOOGLE_VEO_MAX_GENERATIONS ?? 20),
   ledgerFile: resolve(dataDir, "google-veo-ledger.json"),
 });
 const referenceVisionProvider = new DeepSeekReferenceVisionProvider({

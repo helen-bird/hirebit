@@ -54,8 +54,9 @@ DeepSeek performs schema-constrained intent extraction, copy generation and refe
 planning. Google Cloud Text-to-Speech supplies the supported production voices. Vertex AI Veo is an
 image-to-video source for eligible packages. For a supported reference-video order, DeepSeek extracts
 generic action choreography, framing, pacing and transition structure; Veo generates a new generic
-performance around the supplied product; and Hypit assembles that motion with approved narration,
-captions and the final timeline. The source person's identity, likeness, audio, captions and claims are
+performance around the supplied product in two consecutive eight-second generations, with the first
+segment's final frame anchoring the continuation; and Hypit trims the result to the reference duration
+within an 8-16 second window and assembles approved narration and captions. The source person's identity, likeness, audio, captions and claims are
 not copied. Reference-video orders fail closed when generative motion is unavailable instead of being
 silently replaced by product-photo zooms.
 
@@ -133,7 +134,7 @@ or a deployment secret manager.
 | --- | --- | --- |
 | DeepSeek | `DEEPSEEK_API_KEY` | Only sanitized task fields and required media are sent |
 | Google TTS | Google ADC + `GOOGLE_CLOUD_PROJECT` | Sold language/voice set and per-order character cap |
-| Vertex AI Veo | Google ADC + explicit enablement | Eligible package, duration and reservation limits |
+| Vertex AI Veo | Google ADC + explicit enablement | Two generations per reference order; 20 reservations per rolling hour |
 | GoBTC Pay | merchant/payer config under ignored local state | Never expose keys to the web or worker |
 | Cloudflare gateway | `UPSTREAM_ORIGIN` deployment variable | Tunnel only the Buyer; never the Seller port |
 
@@ -189,6 +190,8 @@ docs/            operations, acceptance and threat-model documentation
 - GoBTC availability and funding are external operational dependencies.
 - A reference video guides generic action choreography and structure; Hirebit does not reproduce the
   source person's identity or promise pixel-identical cloning.
+- Reference-guided output uses two continuous Veo segments and follows the source duration within an
+  8-16 second window; a continuous static hold over two seconds is rejected.
 - Provider calls may incur charges. Keep quotas and billing alerts enabled before exposing a URL.
 - Hypit's license restricts hosted, multi-tenant and third-party service use. Obtain Hypit.AI's written
   authorization or a commercial license before opening the production capability beyond an approved

@@ -18,7 +18,9 @@ authorize or submit a Bitcoin payment.
   SameSite=Strict` cookie without placing it in an HTTP URL or committed file.
 - Browser writes require the configured HTTPS origin; the Buyer accepts only explicit hostnames.
 - Non-declined delegations, mutation frequency, request length, TTS characters and Veo reservations
-  are capped. Reservations survive restart and uncertain provider submissions are not blindly retried.
+  are capped. The public task limit remains 3 per rolling hour; Veo permits 20 generation reservations
+  per rolling hour and a reference-guided task consumes two. Reservations survive restart and uncertain
+  provider submissions are not blindly retried.
 - Reference URLs are constrained to supported providers, revalidated through redirects and fetched
   into order-private storage. Required reference processing fails closed.
 - Direct campaign creation and mainnet payment are disabled in public mode.
