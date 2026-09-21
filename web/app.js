@@ -449,6 +449,7 @@ const rejectionLabels = {
 
 const packageProfiles = {
   creator_pitch: {
+    displayName: "Creator Pitch",
     format: "1 CREATOR",
     outcome: "Direct pitch to camera",
     difference: "Launch ads and direct response",
@@ -464,6 +465,7 @@ const packageProfiles = {
     basePriceSats: 1300,
   },
   ranking_listicle: {
+    displayName: "Ranking / Listicle",
     format: "1 PRESENTER",
     outcome: "Three reasons, ranked and explained",
     difference: "Comparisons and consideration",
@@ -471,6 +473,7 @@ const packageProfiles = {
     basePriceSats: 1600,
   },
   two_person_podcast: {
+    displayName: "Two-person Podcast",
     format: "2 HOSTS",
     outcome: "Objections answered in conversation",
     difference: "Trust and social proof",
@@ -541,18 +544,31 @@ function readableObjective(value) {
 function customerDecisionRationale(campaign) {
   const decision = campaign.decision;
   const selected = decision.selected;
+  const profile = packageProfiles[selected.productId] ?? {};
   const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
   const spend = selected.totalAuthorizedSats ?? selected.quote.amountSats;
   const remaining = Number.isSafeInteger(budget) ? Math.max(0, budget - spend) : null;
-  const parts = [
-    `${productDisplayName(selected.productId, selected.productName)} is the strongest match for ${readableObjective(decision.objective).toLowerCase()}.`,
-  ];
-  if (campaign.input?.referenceVideoUrl) {
-    parts.push("It can turn your reference into new product-led motion.");
+  const hookCount = selected.scope?.hookVariants ?? selected.quote?.addOns?.hookVariants ?? 1;
+  const hasReferenceVideo = Boolean(campaign.input?.brief?.evidenceUrl
+    ?? campaign.input?.referenceVideoUrl
+    ?? selected.quote?.brief?.evidenceUrl);
+  const parts = [];
+  if (hasReferenceVideo && selected.productId === "proof_demo") {
+    parts.push("Product Showcase is the only offered format that turns your product image and the reference video's action into a product-led demonstration.");
+  } else {
+    parts.push(`${productDisplayName(selected.productId, selected.productName)} is the strongest match for ${readableObjective(decision.objective).toLowerCase()}${profile.outcome ? ` because it delivers ${profile.outcome.toLowerCase()}` : ""}.`);
   }
-  parts.push(`You get ${selectedPlanSummary(decision).toLowerCase()} for ${spend.toLocaleString()} sats${remaining === null ? "." : `, with ${remaining.toLocaleString()} sats left.`}`);
-  if (decision.tradeoffs?.broader?.withinBudget === false) {
-    parts.push("The next larger option would exceed your approved spend.");
+  if (hookCount > 1) {
+    parts.push(`${hookCount} distinct openings give the launch meaningful creative testing.`);
+  }
+  parts.push(`The selected scope costs ${spend.toLocaleString()} sats${remaining === null ? "." : ` and leaves ${remaining.toLocaleString()} sats available.`}`);
+  const cheaper = decision.tradeoffs?.cheaper;
+  if (cheaper && cheaper.planId !== selected.planId && Number.isSafeInteger(cheaper.totalAuthorizedSats)) {
+    parts.push(`The cheaper ${cheaper.label.toLowerCase()} option saves ${(spend - cheaper.totalAuthorizedSats).toLocaleString()} sats, but removes the extra openings needed to compare hook performance.`);
+  }
+  const broader = decision.tradeoffs?.broader;
+  if (broader?.withinBudget === false) {
+    parts.push(`The larger ${broader.label.toLowerCase()} option costs ${broader.totalAuthorizedSats.toLocaleString()} sats and exceeds your approved spend.`);
   }
   return parts.join(" ");
 }
@@ -582,6 +598,83 @@ function rejectionExplanation(code, plan, decision, campaign) {
   return explanations[code] ?? "Does not meet one of the confirmed campaign requirements.";
 }
 
+function rejectedPackageItems(rejected, decision, campaign) {
+  const groups = new Map();
+  for (const plan of rejected) groups.set(plan.productId, [...(groups.get(plan.productId) ?? []), plan]);
+  const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
+  const deadline = campaign.input?.deadlineMinutes;
+  const selectedHooks = decision.selected.scope?.hookVariants ?? 1;
+  return [...groups.entries()].map(([productId, plans]) => {
+    const hooks = [...new Set(plans.map((plan) => plan.scope?.hookVariants).filter(Number.isSafeInteger))].sort((a, b) => a - b);
+    const hookLabel = hooks.length ? ` · ${hooks.join(" / ")} hook${hooks.length === 1 && hooks[0] === 1 ? "" : "s"}` : "";
+    const codes = new Set(plans.flatMap((plan) => plan.rejections ?? []));
+    if (productId === "proof_demo") {
+      const largest = plans.reduce((best, plan) => (plan.scope?.hookVariants ?? 0) > (best.scope?.hookVariants ?? 0) ? plan : best, plans[0]);
+      const spend = largest.totalAuthorizedSats ?? largest.quote?.amountSats;
+      const turnaround = largest.quote?.estimatedTurnaroundMinutes;
+      return {
+        title: `${productDisplayName(productId, largest.productName)}${hookLabel}`,
+        meta: "Right format · oversized scope",
+        detail: `${hooks.at(-1)} hooks would cost ${Number(spend).toLocaleString()} sats${Number.isSafeInteger(budget) ? `—${Math.max(0, spend - budget).toLocaleString()} above your limit` : ""}${Number.isSafeInteger(turnaround) && Number.isSafeInteger(deadline) ? `—and use the full ${deadline}-minute delivery window` : ""}. ${selectedHooks} hooks keeps meaningful launch testing inside budget.`,
+      };
+    }
+    if (codes.has("reference_adaptation_unsupported") && productId === "creator_pitch") {
+      return {
+        title: `${productDisplayName(productId, plans[0].productName)}${hookLabel}`,
+        meta: "Presenter-led format",
+        detail: "This package puts a creator on camera to deliver the pitch. Your brief asks the product itself to perform the reference video's actions, so the central visual idea would be lost.",
+      };
+    }
+    if (codes.has("reference_adaptation_unsupported") && productId === "ranking_listicle") {
+      return {
+        title: `${productDisplayName(productId, plans[0].productName)}${hookLabel}`,
+        meta: "List-led format",
+        detail: "This package uses a presenter to rank and explain several points. Your brief needs a continuous product demonstration based on the reference action, not a spoken list.",
+      };
+    }
+    if (codes.has("reference_adaptation_unsupported") && productId === "two_person_podcast") {
+      const startingPrice = packageProfiles[productId]?.basePriceSats;
+      return {
+        title: `${productDisplayName(productId, plans[0].productName)}${hookLabel}`,
+        meta: "Two-host conversation",
+        detail: `This package is built for two people discussing objections. Your brief calls for a product-led TikTok demonstration with no speakers${Number.isSafeInteger(startingPrice) && Number.isSafeInteger(budget) ? `, and this package starts at ${startingPrice.toLocaleString()} sats—above your ${budget.toLocaleString()}-sat limit` : ""}.`,
+      };
+    }
+    const sample = plans[0];
+    return {
+      title: `${productDisplayName(productId, sample.productName)}${hookLabel}`,
+      meta: "Outside this brief's requirements",
+      detail: [...codes].map((code) => rejectionExplanation(code, sample, decision, campaign)).join(" "),
+    };
+  });
+}
+
+function rankExplanation(plan, decision, campaign) {
+  const selected = decision.selected;
+  const spend = plan.totalAuthorizedSats ?? plan.quote?.amountSats ?? 0;
+  const selectedSpend = selected.totalAuthorizedSats ?? selected.quote?.amountSats ?? spend;
+  const hooks = plan.scope?.hookVariants ?? 1;
+  const selectedHooks = selected.scope?.hookVariants ?? 1;
+  const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
+  const deadline = campaign.input?.deadlineMinutes;
+  const turnaround = plan.quote?.estimatedTurnaroundMinutes;
+  const usesReference = Boolean(plan.quote?.brief?.evidenceUrl);
+  if (plan.planId === selected.planId) {
+    const reasons = [usesReference
+      ? `Chosen because it follows your reference action and gives ${hooks} different openings to test.`
+      : `Chosen because it offers the strongest overall campaign fit with ${hooks} openings to test.`];
+    if (Number.isSafeInteger(budget)) reasons.push(`It stays ${(budget - spend).toLocaleString()} sats under budget.`);
+    if (Number.isSafeInteger(deadline) && Number.isSafeInteger(turnaround) && deadline > turnaround) {
+      reasons.push(`It also keeps ${deadline - turnaround} minutes of delivery buffer.`);
+    }
+    return reasons.join(" ");
+  }
+  if (plan.productId === selected.productId && hooks < selectedHooks) {
+    return `Lower-cost fallback: it uses the same product-led format and saves ${(selectedSpend - spend).toLocaleString()} sats, but gives only ${hooks} opening${hooks === 1 ? "" : "s"}—so the launch cannot compare which hook performs best.`;
+  }
+  return "This option meets the campaign requirements, but offers less useful creative coverage for the money than the recommendation.";
+}
+
 function decisionEvidence(campaign) {
   const decision = campaign.decision;
   const plans = decision.plans ?? decision.candidates ?? [];
@@ -608,16 +701,16 @@ function decisionEvidence(campaign) {
     };
   });
   const rankedItems = eligible.map((plan, index) => {
-    const assessment = plan.semanticAssessment;
-    const scores = assessment
-      ? `Goal ${Math.round(assessment.objectiveFit * 100)}% · Creative ${Math.round(assessment.creativeFit * 100)}% · Evidence ${Math.round(assessment.evidenceFit * 100)}%`
-      : `Overall fit ${Math.round((plan.score ?? 0) * 100)}%`;
+    const hooks = plan.scope?.hookVariants ?? 1;
+    const price = plan.totalAuthorizedSats ?? plan.quote?.amountSats ?? 0;
+    const selected = plan.planId === decision.selected.planId;
+    const referenceMatch = plan.quote?.brief?.evidenceUrl ? "Reference action matched · " : "";
     return {
       title: `${index + 1}. ${planLabel(plan)}`,
-      meta: `${scores} · ${(plan.totalAuthorizedSats ?? plan.quote?.amountSats ?? 0).toLocaleString()} sats`,
-      detail: plan.planId === decision.selected.planId
-        ? customerDecisionRationale(campaign)
-        : "This option meets the campaign requirements and budget, but offers less overall campaign value than the recommendation.",
+      meta: selected
+        ? `${referenceMatch}${hooks} openings to test · ${price.toLocaleString()} sats`
+        : `Same product-led format · ${hooks} opening${hooks === 1 ? " only" : "s"} · ${price.toLocaleString()} sats`,
+      detail: rankExplanation(plan, decision, campaign),
     };
   });
   return {
@@ -642,11 +735,7 @@ function decisionEvidence(campaign) {
       eyebrow: "WHAT DIDN'T QUALIFY",
       title: `${rejected.length} option${rejected.length === 1 ? " was" : "s were"} ruled out before recommendation.`,
       intro: "Only options that respected every approved requirement moved forward.",
-      items: rejected.map((plan) => ({
-        title: planLabel(plan),
-        meta: "Not a fit for this campaign",
-        detail: (plan.rejections ?? []).map((code) => rejectionExplanation(code, plan, decision, campaign)).join(" "),
-      })),
+      items: rejectedPackageItems(rejected, decision, campaign),
     },
     rank: {
       eyebrow: "HOW THE BEST OPTIONS COMPARED",
@@ -659,7 +748,7 @@ function decisionEvidence(campaign) {
     purchase: {
       eyebrow: "WHY THIS PLAN WAS AUTHORIZED",
       title: `${productDisplayName(decision.selected.productId, decision.selected.productName)} gives the strongest result inside your limit.`,
-      intro: customerDecisionRationale(campaign),
+      intro: concise(customerDecisionRationale(campaign), 280),
       items: [
         { title: "Selected output", meta: selectedPlanSummary(decision), detail: "The scope gives the campaign useful creative coverage without buying unnecessary output." },
         { title: "Final spend", meta: `${spend.toLocaleString()} of ${Number(budget).toLocaleString()} sats`, detail: `${Math.max(0, budget - spend).toLocaleString()} sats stays unspent.` },
@@ -680,7 +769,9 @@ function renderDecisionEvidence(panel, evidence, { page = 0, onPageChange } = {}
   heading.append(copy, node("small", "", "EXPLORE THE DECISION"));
   const main = node("div", "decision-evidence-main");
   const list = node("div", "decision-evidence-list");
-  for (const item of evidence.items.slice(currentPage * pageSize, (currentPage + 1) * pageSize)) {
+  const visibleItems = evidence.items.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+  list.classList.add(`items-${visibleItems.length}`);
+  for (const item of visibleItems) {
     const row = node("article", "decision-evidence-item");
     const label = node("div");
     label.append(node("strong", "", item.title), node("small", "", item.meta));
