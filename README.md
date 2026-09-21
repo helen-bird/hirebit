@@ -1,16 +1,25 @@
 # Hirebit
 
-> Hackathon Demo — a working product prototype for delegated, safety-bounded video commerce.
+> Hackathon Demo — a working prototype of pay-per-job procurement for short-form video campaigns.
 
-Hirebit is a safety-bounded agentic marketplace for commissioning product-marketing videos. A
-customer describes the outcome, supplies a product image and optionally a TikTok, Instagram or
-YouTube reference, then delegates the job to a Buyer agent. The Buyer clarifies missing facts,
-compares complete purchase plans (package × output scope × price), enforces a spending mandate and
-supervises production through Hypit.
+Small businesses already use AI for marketing and need short-form video, but an occasional campaign
+job does not map neatly to another tool subscription, credit system and production workflow. Hirebit
+lets a merchant specify the outcome, assets, deadline and budget. An AI Buyer decides what production
+is worth purchasing, pays for that job and supervises delivery through Hypit.
 
-The product is designed around a simple idea: an agent may make choices, but it must not invent its
-own authority. Budget, scope, payment and external side effects remain bounded by explicit policy and
-durable evidence.
+Hirebit is built around a simple product thesis: **the demand is task-shaped, while most AI software
+is sold tool-by-tool.** The customer buys a finished campaign rather than learning and managing every
+tool behind it:
+
+```text
+goal + assets + deadline + budget → purchasable production plan → payment → finished campaign
+```
+
+Bitcoin is not the customer proposition. The customer proposition is pay-per-job procurement.
+Bitcoin is the machine-native payment rail that lets an agent pay a capability provider for one job
+without maintaining a subscription relationship with every provider. The agent may decide what is
+worth buying, but it may not invent its own authority: budget, scope, payment and external side
+effects remain bounded by explicit policy and durable evidence.
 
 ## What it does
 
@@ -34,6 +43,37 @@ Hirebit currently offers four Hypit-backed production packages:
 
 Purchased variants are compiled as a bounded Hook × language × aspect-ratio matrix. Supported
 ratios are 9:16, 1:1 and 16:9, with a hard ceiling of 30 output videos per order.
+
+## Product thesis and evidence
+
+Hirebit does not claim that small businesses have already adopted autonomous creative procurement.
+It starts from evidence-backed behavior and uses this prototype to test the remaining assumptions.
+
+| What is supported today | Evidence | What it means for Hirebit |
+| --- | --- | --- |
+| Small businesses already use AI for marketing | QuickBooks reports that 41% of AI-using small businesses use it for marketing | Hirebit does not need to teach the market that AI can help with marketing |
+| Video marketing is an established need | Wyzowl reports that 91% of businesses use video marketing; cost and time remain leading barriers for non-users | Short-form video is a practical first procurement category |
+| Tool fragmentation creates friction | inTandem reports that 43% of SMBs would pay more for a solution that reduced their total tool count | The value is reducing tool and workflow management, not adding another generator |
+| Smaller businesses are cost-sensitive about AI | Bredin reports that 42% of AI-using U.S. SMBs use only free tools; cost-effectiveness is the top AI attribute for the smallest firms | A bounded, low-commitment job purchase is a reasonable model to test |
+
+Sources: [QuickBooks Small Business Insights 2026](https://quickbooks.intuit.com/r/small-business-data/small-business-insights/),
+[QuickBooks AI Impact Report 2026](https://quickbooks.intuit.com/r/small-business-data/ai-impact-report/),
+[Wyzowl Video Marketing Statistics 2026](https://wyzowl.com/sovm-results-2015/),
+[inTandem 2026 SMB Digital Adoption Report](https://intandem.vcita.com/content-hub/the-2026-small-business-digital-adoption-report),
+[Bredin research on SMB AI purchasing](https://www.bredin.com/news-posts/press-release-new-bredin-research-reveals-why-smbs-arent-paying-for-ai-tools-and-what-would-prompt-a-change),
+and [Bredin research on the AI attributes SMBs value](https://www.bredin.com/blog/what-smbs-want-in-an-ai-solution-2).
+
+The prototype is intended to validate four open questions:
+
+- Will small businesses delegate a marketing procurement decision to an agent?
+- For occasional campaign work, will they prefer pay-per-job procurement to operating tools directly?
+- Is Bitcoin the most useful payment rail for machine-to-machine settlement in this workflow?
+- Does buying three hook variants create enough incremental campaign value to justify the added spend?
+
+The six-month validation plan therefore starts with five design partners and measures repeat use,
+decision acceptance, budget utilization, time-to-campaign and output quality. Later milestones test
+10 paid jobs, mainnet settlement, contribution margin and a second capability Seller before making
+broader market or ROI claims.
 
 ## System design
 
@@ -82,7 +122,7 @@ the plans in stages:
 | Enumerate | Requests Seller catalog and quotes for every feasible package × scope combination | None—prices and capabilities come only from the Seller | Comparable plan matrix |
 | Filter | Rejects capability, format, deadline and customer-budget violations | Cannot restore an ineligible plan | Eligible plan set with rejection reasons |
 | Rank | Supplies only eligible plans and bounded decision factors | Assesses objective fit, creative fit, evidence quality and testing value | Ranked plans and concise rationale |
-| Select | Verifies the returned plan ID and recomputes all monetary checks | Chooses the least expensive plan that materially satisfies the objective | Selected plan plus cheaper/broader trade-offs |
+| Select | Verifies the returned plan ID and recomputes all monetary checks | Chooses the best-value plan that materially advances the objective | Selected plan plus cheaper/broader trade-offs |
 
 This ordering is the key design choice: AI contributes semantic judgment where rules are brittle, but
 never receives the ability to redefine the constraints it is judging inside.
