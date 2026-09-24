@@ -12,7 +12,7 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 test("media inspection retains source dimensions and duration for packaged assets", async () => {
   const image = await probeMedia(join(rootDir, "productions/shared-assets/arduino-uno-r4-wifi/product.jpg"));
   assert.ok(image.streams.some((stream) => stream.codec_type === "video" && stream.width > 0 && stream.height > 0));
-  const video = await probeMedia(join(rootDir, "productions/previews/proof-demo.mp4"));
+  const video = await probeMedia(join(rootDir, "productions/previews/final/proof-demo.mp4"));
   assert.ok(Number(video.format.duration) >= 24);
   assert.ok(video.streams.some((stream) => stream.codec_type === "video" && stream.width === 540 && stream.height === 960));
   assert.ok(video.streams.some((stream) => stream.codec_type === "audio" && stream.sample_rate));
