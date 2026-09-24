@@ -1,27 +1,30 @@
 # Hirebit
 
-> Hackathon Demo — a working prototype of pay-per-job procurement for short-form video campaigns.
+## 60-second Judge Summary
 
-Live demo: [sats-story-hirebit.pages.dev/console](https://sats-story-hirebit.pages.dev/console/)
+**Problem.** Small businesses need occasional product-video campaigns without managing separate AI
+tools. Hirebit's AI Buyer clarifies a brief, compares four Seller packages, buys the best eligible
+scope within budget, and validates delivery.
 
-Small businesses already use AI for marketing and need short-form video, but an occasional campaign
-job does not map neatly to another tool subscription, credit system and production workflow. Hirebit
-lets a merchant specify the outcome, assets, deadline and budget. An AI Buyer decides what production
-is worth purchasing, pays for that job and supervises delivery through Hypit.
+**Why Bitcoin.** GoBTC Pay is the native-BTC rail for a job between Buyer and Seller agents, so
+Hirebit can purchase a service without a Seller-specific subscription or credits. Its multisig
+rail accepts payment in seconds while on-chain settlement follows later. AI ranks options; code
+enforces the exact mandate, budget, approval mode, PSBT and retries.
 
-Hirebit is built around a simple product thesis: **the demand is task-shaped, while most AI software
-is sold tool-by-tool.** The customer buys a finished campaign rather than learning and managing every
-tool behind it:
+**Transaction.** Brief + assets → clarified mandate and quotes → budget reservation → Seller
+invoice → Buyer validates and signs the PSBT → GoBTC `paid` → production and delivery → later
+on-chain settlement.
 
-```text
-goal + assets + deadline + budget → purchasable production plan → payment → finished campaign
-```
+**Where is the BTC after paid?** The funding UTXO is still in the Buyer's GoBTC-registered 2-of-3
+multisig wallet; the Buyer key alone cannot spend it. GoBTC has accepted the signature and committed
+to the payment, so the Seller starts this bounded job, although `paidAt` can still be `null` and
+`transactions[]` empty. BTC reaches the Seller only after later batched on-chain settlement. See the
+[official guide](https://pioneers.agnic.ai/build/bitcoin-pay) and [payment lifecycle](docs/PAYMENT_LIFECYCLE.md).
 
-The customer proposition is pay-per-job procurement. Bitcoin is the machine-native payment rail
-that lets an agent pay a capability provider for one job without maintaining a subscription
-relationship with every provider. The agent may decide what is
-worth buying, but it may not invent its own authority: budget, scope, payment and external side
-effects remain bounded by explicit policy and durable evidence.
+**Built and verified.** The [live demo](https://sats-story-hirebit.pages.dev/console/) exercises
+the Buyer decision, budget controls and real video-production path; successful jobs are delivered.
+GoBTC responses are simulated there: **no BTC moves**. Real GoBTC clients and local PSBT signing
+exist, but wallet onboarding, mainnet payment and settlement remain unverified live.
 
 ### Find the payment code
 
@@ -121,8 +124,9 @@ or submitting another one. The order's stable `externalId` and local reservation
 an expired or rejected unpaid payment releases the reservation only when GoBTC reports that
 terminal status. A local invoice deadline alone cannot prove that money was not submitted.
 A paid order whose production fails receives a bounded Seller-side retry where the provider
-operation is safe to repeat; an ambiguous Hypit Build without an ID or exhausted retries remain
-Seller-side obligations, never a second Buyer charge or an automatic Bitcoin reversal. Buyer
+operation is safe to repeat; a terminal Veo rejection instead pauses for review. An ambiguous
+Hypit Build without an ID or exhausted retries remains a Seller-side obligation, never a second
+Buyer charge or an automatic Bitcoin reversal. Buyer
 cancellation now blocks later submission when it wins the final submit gate, and a Seller stop
 request blocks production when it wins the production-start race. An unpaid invoice remains under
 reconciliation until GoBTC confirms a terminal status. If `paid` arrives after the stop, Hirebit
