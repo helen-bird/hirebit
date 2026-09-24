@@ -1,6 +1,6 @@
 # Hirebit
 
-## 60-second Judge Summary
+## 60 second summary
 
 **Problem.** Small businesses need occasional product-video campaigns without managing separate AI
 tools. Hirebit's AI Buyer clarifies a brief, compares four Seller packages, buys the best eligible
@@ -26,7 +26,24 @@ the Buyer decision, budget controls and real video-production path; successful j
 GoBTC responses are simulated there: **no BTC moves**. Real GoBTC clients and local PSBT signing
 exist, but wallet onboarding, mainnet payment and settlement remain unverified live.
 
-### Find the payment code
+## Contents
+
+- [Find the payment code](#find-the-payment-code)
+- [What it does](#what-it-does)
+- [Product thesis and evidence](#product-thesis-and-evidence)
+- [Payment modes and validation](#payment-modes-and-validation)
+  - [Authorization and settlement](#payment-authorization-is-separate-from-settlement)
+- [System design](#system-design)
+- [How delegated purchasing works](#how-delegated-purchasing-works)
+- [Security by design](#security-by-design)
+- [Quick start: local UI](#quick-start-local-ui)
+- [Production providers](#production-providers)
+- [Verification](#verification)
+- [Repository map](#repository-map)
+- [Known limits](#known-limits)
+- [License and third-party code](#license-and-third-party-code)
+
+## Find the payment code
 
 | Question | Start here |
 | --- | --- |
