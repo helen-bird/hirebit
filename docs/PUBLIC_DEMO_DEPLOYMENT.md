@@ -1,6 +1,13 @@
 # Restricted public-demo deployment
 
-The optional deployment places a Cloudflare Pages Worker in front of a temporary outbound tunnel:
+For the supervised one-week Mac deployment, see [Local hosting operations](LOCAL_WEEK_HOSTING.md).
+It adds bounded keep-awake, process recovery, health checks and private state snapshots.
+A fixed named tunnel requires a Cloudflare-managed domain. The local operations guide records the
+current migration and activation status; a Quick Tunnel is not an uptime guarantee.
+The current Hirebit deployment completed its named-tunnel cutover on 2026-09-23; its Pages entry
+URL is unchanged, and the old temporary tunnel is stopped.
+
+The deployment places a Cloudflare Pages Worker in front of an outbound tunnel:
 
 ```text
 browser → Pages Worker → HTTPS tunnel → Buyer 127.0.0.1:8788 → Seller 127.0.0.1:8787
@@ -17,10 +24,24 @@ authorize or submit a Bitcoin payment.
 - A fragment-bearing invite can exchange the token for a short-lived `HttpOnly; Secure;
   SameSite=Strict` cookie without placing it in an HTTP URL or committed file.
 - Browser writes require the configured HTTPS origin; the Buyer accepts only explicit hostnames.
-- Non-declined delegations, mutation frequency, request length, TTS characters and Veo reservations
-  are capped. The public task limit is 20 per rolling hour; Veo separately permits 20 generation reservations
+- All created delegations, including cancelled and declined ones, mutation frequency, request length,
+  TTS characters and Veo reservations are capped. The public task limit is 20 per rolling hour,
+  reserved atomically before model use; Veo separately permits 20 generation reservations
   per rolling hour and a reference-guided task consumes two. Reservations survive restart and uncertain
   provider submissions are not blindly retried.
+- Uploaded customer images require Buyer authentication to retrieve. Upload counts survive process
+  restart, are serialized per Buyer process, and public uploads stop when the local image store
+  reaches 10 GiB. Images older than seven days are removed on startup and then hourly, except
+  those still referenced by an active delegation or pending review. Cleanup is local to this host;
+  it does not remove campaign deliverables.
+- Social reference-video fetches are limited to 1 GB per file while downloading. Their re-fetchable
+  cache evicts older entries at 10 GB; per-order source files and delivered videos are separate.
+  New downloads stop before local free space falls below the temporary-file and host reserve.
+- A single brief can request no more than 10 paid interpretations in a rolling hour. Clarification
+  answers have per-answer, per-request and cumulative text limits. Seller-side copy, voice, reference
+  analysis and Veo work may retry once for the same operation at Seller cost. A Hypit Build with
+  an unknown submission outcome and no Build ID stops for Seller-side reconciliation, without a
+  second Buyer charge.
 - There is no separate per-order ceiling. Every order remains bounded by its customer-authorized
   mandate, while Buyer daily and lifetime ceilings are both 60,000 sats. The startup guard still
   refuses public mode with real Bitcoin enabled.
@@ -46,7 +67,8 @@ PUBLIC_DEMO_MAX_MUTATIONS_PER_MINUTE=30
 
 Do not commit this file or reuse the token for any other service.
 
-Start Seller, Buyer and the outbound tunnel in separate terminals:
+For a short manual preview only, start Seller, Buyer and a temporary outbound tunnel in separate
+terminals. For the week-long deployment, use the supervised named-tunnel procedure above instead:
 
 ```bash
 npm run public-demo:seller

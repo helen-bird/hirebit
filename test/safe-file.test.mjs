@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { PassThrough } from "node:stream";
 import { once } from "node:events";
 import test from "node:test";
 
-import { resolveRegularFile, streamRegularFile } from "../src/safe-file.mjs";
+import { resolveRegularFile, streamRegularFile, verifyRegularFileDigest } from "../src/safe-file.mjs";
 
 test("safe file streaming transfers FileHandle ownership without a double close", async () => {
   const directory = await mkdtemp(join(tmpdir(), "safe-file-stream-"));
@@ -20,6 +21,32 @@ test("safe file streaming transfers FileHandle ownership without a double close"
     streamRegularFile(response, selected);
     await once(response, "end");
     assert.equal(Buffer.concat(chunks).toString("utf8"), "body { color: orange; }\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("package download verifies the opened file before streaming it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "safe-file-digest-"));
+  try {
+    const bytes = Buffer.from("verified media bytes\n");
+    await writeFile(join(directory, "video.mp4"), bytes);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const selected = await resolveRegularFile(directory, "video.mp4");
+    await verifyRegularFileDigest(selected, digest, bytes.length);
+    const response = new PassThrough();
+    const chunks = [];
+    response.on("data", (chunk) => chunks.push(chunk));
+    streamRegularFile(response, selected);
+    await once(response, "end");
+    assert.deepEqual(Buffer.concat(chunks), bytes);
+
+    await writeFile(join(directory, "video.mp4"), "tampered media bytes\n");
+    const tampered = await resolveRegularFile(directory, "video.mp4");
+    await assert.rejects(
+      verifyRegularFileDigest(tampered, digest, bytes.length),
+      (error) => error.code === "file_integrity_failed",
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

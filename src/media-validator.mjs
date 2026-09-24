@@ -3,39 +3,9 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 
 import ffmpegStatic from "ffmpeg-static";
-import ffprobeStatic from "ffprobe-static";
 
 import { AppError } from "./errors.mjs";
-
-function probe(path, timeoutMs = 30_000) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(ffprobeStatic.path, [
-      "-v", "error",
-      "-show_entries", "format=duration,format_name:stream=index,codec_type,codec_name,width,height,sample_rate,channels",
-      "-of", "json",
-      path,
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout = `${stdout}${chunk}`.slice(-1_000_000); });
-    child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-20_000); });
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(new AppError("media_probe_failed", "Could not start media validation", 502, { cause: error.message }));
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        reject(new AppError("media_invalid", "Delivered media could not be decoded", 502, { stderr }));
-        return;
-      }
-      try { resolve(JSON.parse(stdout)); } catch {
-        reject(new AppError("media_probe_failed", "Media validator returned invalid data", 502));
-      }
-    });
-  });
-}
+import { probeMedia } from "./media-probe.mjs";
 
 function analyze(path, args, timeoutMs = 120_000) {
   return new Promise((resolve, reject) => {
@@ -161,7 +131,7 @@ export async function validateCampaignDeliverables({ files, quote }) {
   const contentDigests = new Map();
   const [minimumDuration, maximumDuration] = quote.product?.durationSeconds ?? [1, 600];
   for (const file of videos) {
-    const details = await probe(file.absolutePath);
+    const details = await probeMedia(file.absolutePath);
     const stream = details.streams?.find((item) => item.codec_type === "video");
     const audioStream = details.streams?.find((item) => item.codec_type === "audio");
     const duration = Number(details.format?.duration);

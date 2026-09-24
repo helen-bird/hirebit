@@ -1,12 +1,12 @@
 # Three-minute demo runbook
 
-1. Start on `/ready`. State once that the organizers confirmed the GoBTC outage and approved clearly disclosed simulated responses for Demo Day. Use the explicit `npm run demo:seller` / `npm run demo:buyer` fallback and show `mode: demo_simulated`, `simulated: true`, `mainnet: false` before continuing. Do not imply that wallet registration or merchant onboarding succeeded.
-2. Submit one specific customer delegation with objective, subject, hard sats budget, deadline and authorization mode.
-3. Show the extracted versioned Mandate and approve its exact scope hash. If a hard fact is missing, answer the required clarification instead of skipping it.
-4. Show multiple eligible/rejected packages, their price/time trade-offs and the selected rationale. For confirm-before-purchase, perform the separate purchase confirmation.
-5. In Demo mode, identify the step as **Simulated GoBTC settlement** and show the zero-fee simulated intent and non-payable recipient marker. Explain that the same Buyer mandate, reservation, order and production gates are running while only the provider response is simulated. Never display a private key or API token.
-6. Show that the authenticated simulated submission creates a `demo_receipt_` and only then unlocks Hypit. The Build must consume the commission; the zero-cost smoke video is not a substitute.
-7. Open the validated delivered video and campaign package. In Demo mode, explicitly show `DEMO ONLY`, zero network fee, pending settlement and no txid; never call the simulated receipt an instant GoBTC receipt or on-chain proof.
-8. End with the campaign testing plan and the concrete next action enabled by the purchased artifact.
+1. Start on the Hirebit console. State once that the organizers confirmed the GoBTC outage and approved clearly disclosed simulated responses for Demo Day. Do not imply that wallet registration, merchant onboarding or a Bitcoin payment succeeded.
+2. Keep **Autonomous** selected and submit the prepared Precision Beauty Swabs brief, product image and reference video.
+3. Show how Hirebit asks only consequential clarification questions, then confirm the customer-facing mandate.
+4. On the decision screen, open **Understand**, **Compare**, **Protect**, **Recommend** and **Purchase**. Explain the packages ruled out, why Product Showcase fits the reference-led brief and how the displayed price already includes a Seller-funded network-fee allowance and stays inside the customer's budget.
+5. Let the autonomous path continue without a second purchase confirmation. Use **Confirm purchase** only when demonstrating the customer-controlled alternative.
+6. At payment, identify the step as **Simulated payment authorization**. Show that the simulated invoice and fee together never exceed the displayed maximum. Explain that the same mandate, reservation, order and production gates run while only the unavailable provider response is simulated. No Bitcoin moves, and on-chain settlement remains pending. Never display a private key or API token.
+7. Keep the production screen visible long enough for the audience to see that Hirebit is actively creating, assembling and validating the campaign.
+8. Open the delivered video and summarize the package, total spend and remaining budget. State that no Bitcoin moved and no transaction ID is claimed.
 
-If mainnet funding, GoBTC infrastructure, provider credentials or final settlement is unavailable, say exactly which step is simulated or pending. Do not present the smoke Build, instant receipt or a mocked payment as mainnet proof.
+If mainnet funding, GoBTC infrastructure, provider credentials or final settlement is unavailable, say exactly which step is simulated or pending. Keep internal IDs, hashes, raw receipts and package evidence files out of the customer journey unless a technical reviewer asks for them.

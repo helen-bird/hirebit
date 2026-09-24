@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import ffmpegStatic from "ffmpeg-static";
 
 import { GoogleVeoVideoProvider } from "../src/google-veo-video-provider.mjs";
+import { markProductionCancellation } from "../src/production-cancellation.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const execFileAsync = promisify(execFile);
@@ -23,7 +24,7 @@ async function generatedVideoBytes(root, color = "magenta") {
   return await readFile(path);
 }
 
-async function setup() {
+async function setup(orderId = "ord_veo_test") {
   const root = await mkdtemp(join(tmpdir(), "google-veo-provider-"));
   const jobDir = join(root, "job");
   const inputDir = join(jobDir, "inputs");
@@ -31,7 +32,7 @@ async function setup() {
   const imagePath = join(inputDir, "product.jpg");
   const image = Buffer.alloc(2048, 3);
   await writeFile(imagePath, image);
-  const order = { id: "ord_veo_test" };
+  const order = { id: orderId };
   const quote = {
     product: { id: "proof_demo", name: "Proof Demo" },
     brief: { productName: "Sample product", description: "Show the visible product in use" },
@@ -102,6 +103,71 @@ async function referenceGuidance(input) {
   };
 }
 
+test("a cancelled order cannot start another paid Veo segment", async () => {
+  const input = await setup();
+  await markProductionCancellation(input.jobDir, input.order.id);
+  let calls = 0;
+  const provider = new GoogleVeoVideoProvider({
+    projectId: "project-test",
+    enabled: true,
+    commercialUseApproved: true,
+    maxGenerations: 2,
+    ledgerFile: join(input.root, "veo-ledger.json"),
+    tokenProvider: async () => "private-token",
+    fetchImpl: async () => { calls += 1; throw new Error("unexpected billable call"); },
+  });
+  await assert.rejects(provider.prepare(input), (error) => error.code === "production_cancelled_before_billable_step");
+  assert.equal(calls, 0);
+});
+
+test("durable cancellation stops the second Veo request even before its marker exists", async () => {
+  const input = await setup("ord_cancel_between_segments");
+  const generatedBytes = await generatedVideoBytes(input.root);
+  let checks = 0;
+  let submissions = 0;
+  const provider = new GoogleVeoVideoProvider({
+    projectId: "project-test", enabled: true, commercialUseApproved: true,
+    maxGenerations: 2, ledgerFile: join(input.root, "veo-ledger.json"),
+    tokenProvider: async () => "private-token", sleepImpl: async () => {}, pollIntervalMs: 0,
+    spendAllowed: async () => { checks += 1; return checks <= 2; },
+    fetchImpl: async (url) => {
+      if (url.endsWith(":predictLongRunning")) {
+        submissions += 1;
+        return new Response(JSON.stringify({ name: "projects/project-test/operations/op-1" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        done: true, response: { videos: [{ bytesBase64Encoded: generatedBytes.toString("base64") }] },
+      }), { status: 200 });
+    },
+  });
+  await assert.rejects(
+    provider.prepare({ ...input, referenceAdaptation: await referenceGuidance(input) }),
+    (error) => error.code === "production_cancelled_before_billable_step",
+  );
+  assert.equal(submissions, 1);
+});
+
+test("concurrent orders cannot both pass a one-generation Veo cost cap", async () => {
+  const first = await setup("ord_concurrent_a");
+  const second = await setup("ord_concurrent_b");
+  const ledgerFile = join(first.root, "veo-ledger.json");
+  let submissions = 0;
+  const provider = new GoogleVeoVideoProvider({
+    projectId: "project-test",
+    enabled: true,
+    commercialUseApproved: true,
+    maxGenerations: 1,
+    ledgerFile,
+    tokenProvider: async () => "private-token",
+    fetchImpl: async () => { submissions += 1; throw new Error("submission interrupted"); },
+  });
+  const results = await Promise.allSettled([provider.prepare(first), provider.prepare(second)]);
+  assert.equal(results.filter((item) => item.reason?.code === "google_veo_generation_cap_reached").length, 2);
+  assert.equal(submissions, 1);
+  const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+  assert.equal(Object.keys(ledger.entries).length, 1);
+});
+
 test("Google Veo provider submits two continuous reference segments and reuses the bound output", async () => {
   const input = await setup();
   const generatedBytes = await generatedVideoBytes(input.root);
@@ -156,14 +222,14 @@ test("Google Veo provider submits two continuous reference segments and reuses t
   assert.ok((await readFile(manifest.output.path)).length > 10_000);
 });
 
-test("Google Veo provider fails closed after an uncertain submission", async () => {
+test("Seller absorbs at most one ambiguous Veo resubmission per segment", async () => {
   const input = await setup();
   let calls = 0;
   const provider = new GoogleVeoVideoProvider({
     projectId: "project-test",
     enabled: true,
     commercialUseApproved: true,
-    maxGenerations: 1,
+    maxGenerations: 2,
     ledgerFile: join(input.root, "seller", "veo-ledger.json"),
     tokenProvider: async () => "private-token",
     fetchImpl: async () => {
@@ -173,13 +239,50 @@ test("Google Veo provider fails closed after an uncertain submission", async () 
   });
   await assert.rejects(
     provider.prepare(input),
-    (error) => error.code === "google_veo_unavailable",
+    (error) => error.code === "google_veo_submission_uncertain",
   );
   await assert.rejects(
     provider.prepare(input),
     (error) => error.code === "google_veo_submission_uncertain",
   );
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
+  const receipt = JSON.parse(await readFile(join(input.jobDir, "veo-inputs", "receipt-1.json"), "utf8"));
+  assert.equal(receipt.submissionAttempts, 2);
+});
+
+test("Google Veo recovers one remaining attempt after restart and resumes identified operation", async () => {
+  const input = await setup("ord_veo_restart");
+  const generatedBytes = await generatedVideoBytes(input.root);
+  const receiptDir = join(input.jobDir, "veo-inputs");
+  await mkdir(receiptDir, { recursive: true });
+  let firstCalls = 0;
+  const first = new GoogleVeoVideoProvider({
+    projectId: "project-test", enabled: true, commercialUseApproved: true,
+    maxGenerations: 1, ledgerFile: join(input.root, "seller", "veo-ledger.json"),
+    tokenProvider: async () => "private-token",
+    fetchImpl: async () => { firstCalls += 1; throw new Error("connection closed"); },
+  });
+  await assert.rejects(first.prepare(input), (error) => error.code === "google_veo_generation_cap_reached");
+  assert.equal(firstCalls, 1);
+  const receipt = JSON.parse(await readFile(join(receiptDir, "receipt-1.json"), "utf8"));
+  assert.equal(receipt.submissionAttempts, 1);
+  let restartCalls = 0;
+  const restarted = new GoogleVeoVideoProvider({
+    projectId: "project-test", enabled: true, commercialUseApproved: true,
+    maxGenerations: 2, ledgerFile: join(input.root, "seller", "veo-ledger.json"),
+    tokenProvider: async () => "private-token",
+    fetchImpl: async (url) => {
+      restartCalls += 1;
+      return new Response(JSON.stringify(url.endsWith(":predictLongRunning")
+        ? { name: "operations/recovered" }
+        : { done: true, response: { videos: [{ bytesBase64Encoded: generatedBytes.toString("base64") }] } }),
+      { status: 200 });
+    },
+  });
+  const result = await restarted.prepare(input);
+  assert.equal(result.generationCount, 1);
+  assert.equal(restartCalls, 2);
+  assert.equal(JSON.parse(await readFile(join(receiptDir, "receipt-1.json"), "utf8")).submissionAttempts, 2);
 });
 
 test("Google Veo hourly reservation cap releases reservations older than one hour", async () => {
@@ -214,5 +317,5 @@ test("Google Veo hourly reservation cap releases reservations older than one hou
   assert.equal(manifest.output.sha256, sha256(generatedBytes));
   const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
   assert.ok(ledger.entries.old_order);
-  assert.ok(ledger.entries[`${input.order.id}:segment-1`]);
+  assert.ok(ledger.entries[`${input.order.id}:segment-1:attempt-1`]);
 });

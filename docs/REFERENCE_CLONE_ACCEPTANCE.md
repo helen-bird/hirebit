@@ -69,6 +69,8 @@ Visual QA rejected the first vision render because two captions created isolated
 
 Compared with the baseline, the final video is materially more product-specific: it names the double-ended form, distinguishes the pointed and rounded tips, shows the visible wooden shafts and uses a direct product CTA. The baseline remains somewhat bolder typographically; the vision version trades that generic impact for accurate product and reference understanding.
 
-## Baseline capability boundary
+## Capability boundary
 
-This now validates secure social-page ingest, mechanical and visual reference analysis, schema-constrained product understanding, dynamic crop/copy/timing compilation, new copy/voice, Hypit Build and verified MP4 export. It still does not claim exact reconstruction of every source shot, action, caption, effect or music cue. With only one product photo, output motion remains crop/zoom/reveal composition rather than newly generated human action or unseen product angles.
+The first non-generative baseline validated secure social-page ingest, mechanical and visual reference analysis, schema-constrained product understanding, dynamic crop/copy/timing compilation, new copy and voice, Hypit Build and verified MP4 export. That historical baseline used crop, zoom and reveal composition from one product photo.
+
+The current reference-guided path adds newly generated generic human action through two bounded Veo segments and Hypit assembly. It still does not claim exact reconstruction of every source shot, action, caption, effect or music cue, and it does not copy the source person's identity or likeness.

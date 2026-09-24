@@ -26,6 +26,18 @@ function digest(value) {
   return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
 
+export function purchaseSelectionDigest(campaign) {
+  const selected = campaign?.decision?.selected;
+  if (typeof selected?.productId !== "string" || selected.quote == null) return null;
+  return digest({
+    productId: selected.productId,
+    planId: selected.planId ?? null,
+    scope: selected.scope ?? null,
+    totalAuthorizedSats: selected.totalAuthorizedSats ?? null,
+    quote: selected.quote,
+  });
+}
+
 function audit(state, clock, type, campaignId, data = {}) {
   state.audit.push({ id: `evt_${randomUUID()}`, at: nowIso(clock), type, campaignId, data });
 }
@@ -33,6 +45,7 @@ function audit(state, clock, type, campaignId, data = {}) {
 function publicCampaign(campaign) {
   const result = structuredClone(campaign);
   if (result.paymentAttempt?.prepared) delete result.paymentAttempt.prepared.signedPsbtBase64;
+  result.purchaseSelectionDigest = purchaseSelectionDigest(result);
   return result;
 }
 
@@ -55,6 +68,7 @@ function discardSignedPsbt(campaign) {
 
 const ACTIVE_RESERVATION_STATES = new Set(["reserved", "prepared", "submitting", "submitted", "uncertain"]);
 const TERMINAL_UNPAID_STATUSES = new Set(["expired", "cancelled", "canceled", "failed", "rejected"]);
+const CANCELLATION_STATES = new Set(["cancelled", "cancellation_pending", "refund_review_required", "cost_review_required"]);
 
 function reservationTotal(reservation) {
   if (reservation === null || reservation === undefined) return 0;
@@ -93,8 +107,8 @@ function validateSellerOrder(order, quote, campaign, policy, now) {
   if (typeof order.payment.btcAddress !== "string" || !order.payment.btcAddress.startsWith("bc1")) {
     throw new AppError("seller_payment_invalid", "Seller payment is missing a Bitcoin mainnet recipient address", 502);
   }
-  if (order.payment.status !== "initiated") {
-    throw new AppError("seller_payment_invalid", "Seller payment must be newly initiated before Buyer signing", 502, {
+  if (!["initiated", "paid"].includes(order.payment.status)) {
+    throw new AppError("seller_payment_invalid", "Seller payment is not available for new signing or payer review", 502, {
       status: order.payment.status ?? null,
     });
   }
@@ -104,9 +118,31 @@ function validateSellerOrder(order, quote, campaign, policy, now) {
   const expiresAt = numericExpiry === null
     ? Date.parse(order.payment.expiresAt)
     : numericExpiry < 10_000_000_000 ? numericExpiry * 1000 : numericExpiry;
-  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+  if (!Number.isFinite(expiresAt) || (order.payment.status === "initiated" && expiresAt <= now)) {
     throw new AppError("seller_payment_expired", "Seller payment is expired or has an invalid expiry", 502);
   }
+}
+
+function assertSamePaymentIntent(order, original) {
+  if (order?.id !== original.id
+    || order?.quoteId !== original.quoteId
+    || order?.externalId !== original.externalId
+    || order?.amountSats !== original.amountSats
+    || order.payment?.id !== original.payment?.id
+    || String(order.payment?.amountSats) !== String(original.payment?.amountSats)
+    || order.payment?.btcAddress !== original.payment?.btcAddress
+    || order.payment?.simulated !== original.payment?.simulated
+    || order.payment?.network !== original.payment?.network) {
+    throw new AppError("seller_payment_intent_changed", "Seller payment intent changed after the order was accepted", 502);
+  }
+}
+
+function hasBuyerSubmissionReceipt(campaign, order) {
+  const attempt = campaign.paymentAttempt;
+  return attempt?.status === "submitted"
+    && attempt.prepared?.paymentId === order.payment.id
+    && typeof attempt.receipt?.instantReceiptId === "string"
+    && attempt.receipt.instantReceiptId !== "";
 }
 
 export class BuyerService {
@@ -158,7 +194,7 @@ export class BuyerService {
     };
   }
 
-  async createCampaign({ input: rawInput, idempotencyKey }) {
+  async createCampaign({ input: rawInput, idempotencyKey, onCreated = null }) {
     if (typeof idempotencyKey !== "string" || idempotencyKey.trim().length < 8 || idempotencyKey.length > 200) {
       throw new AppError("invalid_idempotency_key", "Idempotency-Key must contain 8-200 characters");
     }
@@ -210,7 +246,9 @@ export class BuyerService {
       });
       return { campaign, isNew: true };
     });
-    if (!created.isNew) return publicCampaign(created.campaign);
+    if (onCreated !== null) await onCreated(publicCampaign(created.campaign));
+    const linked = this.getCampaign(created.campaign.id);
+    if (!created.isNew || CANCELLATION_STATES.has(linked.state)) return linked;
 
     let campaign = await this.#evaluate(created.campaign.id);
     if (campaign.state === "decision_ready" && campaign.authorization.autoExecute) {
@@ -232,27 +270,79 @@ export class BuyerService {
   }
 
   async cancelCampaign(campaignId) {
-    return await this.store.transaction((state) => {
+    const pending = await this.store.transaction((state) => {
       const campaign = state.campaigns[campaignId];
       if (campaign === undefined) throw new AppError("campaign_not_found", "Campaign not found", 404);
       if (["completed", "cancelled"].includes(campaign.state)) return publicCampaign(campaign);
-      const paymentStatus = campaign.paymentAttempt?.status;
-      if (["submitting", "submitted", "uncertain"].includes(paymentStatus)
-        || campaign.sellerOrder?.payment?.authorization === "authorized") {
-        throw new AppError(
-          "cancellation_requires_resolution",
-          "Payment may already have been submitted; cancellation requires payment reconciliation and human resolution",
-          409,
-        );
+      const mayHaveRemoteOrder = campaign.cancellation?.orderMayExist === true
+        || campaign.state === "ordering" || campaign.sellerOrder !== null;
+      campaign.state = mayHaveRemoteOrder ? "cancellation_pending" : "cancelled";
+      const firstRequest = campaign.cancellation == null;
+      campaign.cancellation ??= { requestedAt: nowIso(this.clock), state: campaign.state, orderMayExist: mayHaveRemoteOrder };
+      if (!mayHaveRemoteOrder) {
+        campaign.cancelledAt = nowIso(this.clock);
+        campaign.spendReservation = null;
       }
-      campaign.state = "cancelled";
-      campaign.cancelledAt = nowIso(this.clock);
-      campaign.spendReservation = null;
       discardSignedPsbt(campaign);
       campaign.updatedAt = nowIso(this.clock);
-      audit(state, this.clock, "campaign.cancelled", campaignId);
+      if (firstRequest) audit(state, this.clock, mayHaveRemoteOrder ? "campaign.cancellation_requested" : "campaign.cancelled", campaignId);
       return publicCampaign(campaign);
     });
+    if (pending.state === "cancelled") return pending;
+    if (pending.sellerOrder === null) {
+      try {
+        const quote = pending.decision?.selected?.quote;
+        if (quote === undefined) return pending;
+        const order = await this.seller.createOrder(quote.id, `buyer-${campaignId}-${quote.id}`);
+        validateSellerOrder(order, quote, pending, this.policy, this.clock());
+        await this.store.transaction((state) => {
+          const current = state.campaigns[campaignId];
+          if (current.sellerOrder !== null) assertSamePaymentIntent(order, current.sellerOrder);
+          current.sellerOrder = order;
+          current.updatedAt = nowIso(this.clock);
+        });
+        return await this.cancelCampaign(campaignId);
+      } catch (error) {
+        await this.store.transaction((state) => {
+          state.campaigns[campaignId].cancellation.lastError = errorView(error, this.clock);
+        });
+        return this.getCampaign(campaignId);
+      }
+    }
+    try {
+      const order = await this.seller.requestCancellation(pending.sellerOrder.id);
+      const reconciled = await this.store.transaction((state) => {
+        const current = state.campaigns[campaignId];
+        assertSamePaymentIntent(order, current.sellerOrder);
+        current.sellerOrder = order;
+        const resolution = order.cancellation?.state;
+        current.state = resolution === "cancelled_unpaid" ? "cancelled"
+          : resolution === "refund_review_required" ? "refund_review_required"
+            : resolution === "cost_review_required" ? "cost_review_required" : "cancellation_pending";
+        current.cancellation = {
+          ...current.cancellation,
+          state: current.state,
+          refund: order.cancellation?.refund ?? null,
+          productionStartedAt: order.cancellation?.productionStartedAt ?? null,
+        };
+        if (current.state === "cancelled") {
+          current.cancelledAt = nowIso(this.clock);
+          current.spendReservation = null;
+        }
+        current.updatedAt = nowIso(this.clock);
+        audit(state, this.clock, "campaign.cancellation_reconciled", campaignId, { state: current.state });
+        return publicCampaign(current);
+      });
+      return ["refund_review_required", "cost_review_required"].includes(reconciled.state)
+        ? await this.syncCampaign(campaignId) : reconciled;
+    } catch (error) {
+      await this.store.transaction((state) => {
+        const current = state.campaigns[campaignId];
+        current.cancellation.lastError = errorView(error, this.clock);
+        current.updatedAt = nowIso(this.clock);
+      });
+      return this.getCampaign(campaignId);
+    }
   }
 
   async retryFulfillment(campaignId) {
@@ -306,7 +396,8 @@ export class BuyerService {
       campaign = await this.#evaluate(campaignId);
     }
     if (campaign.state === "decision_ready" && !campaign.authorization.autoExecute) return campaign;
-    if (["completed", "cancelled", "fulfillment_failed"].includes(campaign.state)) return campaign;
+    if (["completed", "cancelled", "fulfillment_failed", "payment_origin_review_required"].includes(campaign.state)) return campaign;
+    if (CANCELLATION_STATES.has(campaign.state)) return await this.cancelCampaign(campaignId);
     return await this.executeCampaign(campaignId);
   }
 
@@ -323,16 +414,58 @@ export class BuyerService {
 
   async syncCampaign(campaignId) {
     const campaign = this.getCampaign(campaignId);
+    if (["cancelled", "refund_review_required", "cost_review_required"].includes(campaign.state)) {
+      const next = Date.parse(campaign.sellerOrder?.payment?.nextCheckAt ?? "");
+      if (Number.isFinite(next) && next > this.clock()) return campaign;
+    }
+    if (campaign.state === "cancellation_pending") {
+      const next = Date.parse(campaign.sellerOrder?.payment?.nextCheckAt ?? "");
+      if (campaign.sellerOrder?.cancellation?.state === "stop_requested"
+        && Number.isFinite(next) && next > this.clock()) return campaign;
+      return await this.cancelCampaign(campaignId);
+    }
     if (campaign.sellerOrder === null) return campaign;
     try {
       const order = await this.seller.syncOrder(campaign.sellerOrder.id);
       const synced = await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
+        assertSamePaymentIntent(order, current.sellerOrder);
         const wasPaid = current.spentSats > 0;
         current.sellerOrder = order;
         current.updatedAt = nowIso(this.clock);
         current.lastError = null;
         if (order.payment?.authorization === "authorized") {
+          if (!hasBuyerSubmissionReceipt(current, order) && !wasPaid) {
+            // A GoBTC invoice can also be paid from an unrelated external wallet.
+            // The provider's paid status proves the Seller may fulfill; it does
+            // not prove this Buyer's wallet incurred the debit or network fee.
+            current.lastError = {
+              code: "payment_origin_unverified",
+              message: "Seller payment is paid, but this Buyer has no matching submission receipt",
+              at: nowIso(this.clock),
+            };
+            if (current.spendReservation) current.spendReservation.status = "uncertain";
+            if (current.paymentOriginReviewAt == null) {
+              current.paymentOriginReviewAt = nowIso(this.clock);
+              audit(state, this.clock, "payment.origin_review_required", campaignId, {
+                paymentId: order.payment.id,
+                reason: "paid_without_buyer_submission_receipt",
+              });
+            }
+            if (current.cancellation?.requestedAt) {
+              if (order.production?.state === "completed") current.fulfillmentResult = order.production.result;
+              const resolution = order.cancellation?.state;
+              current.state = resolution === "cancelled_unpaid" ? "cancelled"
+                : resolution === "refund_review_required" ? "refund_review_required"
+                  : resolution === "cost_review_required" ? "cost_review_required" : "cancellation_pending";
+              current.cancellation.state = current.state;
+              current.cancellation.refund = order.cancellation?.refund ?? null;
+              if (current.state === "cancelled") current.cancelledAt ??= nowIso(this.clock);
+            } else {
+              current.state = "payment_origin_review_required";
+            }
+            return publicCampaign(current);
+          }
           const feeSats = Number(current.paymentAttempt?.prepared?.validation?.feeSats
             ?? current.spendReservation?.feeSats ?? 0);
           const totalDebitSats = order.amountSats + feeSats;
@@ -368,6 +501,20 @@ export class BuyerService {
           });
         } else if (current.state !== "payment_uncertain") {
           current.state = "awaiting_payment";
+        }
+        if (current.cancellation?.requestedAt) {
+          if (order.production?.state === "completed") current.fulfillmentResult = order.production.result;
+          const resolution = order.cancellation?.state;
+          current.state = resolution === "cancelled_unpaid" ? "cancelled"
+            : resolution === "refund_review_required" ? "refund_review_required"
+              : resolution === "cost_review_required" ? "cost_review_required" : "cancellation_pending";
+          current.cancellation.state = current.state;
+          current.cancellation.refund = order.cancellation?.refund ?? null;
+          if (current.state === "cancelled") {
+            current.cancelledAt ??= nowIso(this.clock);
+            current.spendReservation = null;
+          }
+          return publicCampaign(current);
         }
         if (order.state === "completed") {
           current.fulfillmentResult = order.production.result;
@@ -445,8 +592,19 @@ export class BuyerService {
     try {
       const active = Object.values(this.store.snapshot().campaigns)
         .filter((campaign) => campaign.sellerOrder !== null
-          && ["awaiting_payment", "payment_submitted", "payment_uncertain", "fulfillment", "packaging", "packaging_failed", "completed"].includes(campaign.state)
-          && campaign.sellerOrder?.payment?.settlement !== "settled");
+          && (["awaiting_payment", "payment_submitted", "payment_uncertain", "payment_origin_review_required", "fulfillment", "packaging", "packaging_failed", "completed", "cancellation_pending", "refund_review_required", "cost_review_required"].includes(campaign.state)
+            || (campaign.state === "cancelled" && campaign.cancellation?.requestedAt
+              && this.clock() < Date.parse(campaign.cancellation.requestedAt) + 7 * 24 * 60 * 60 * 1000))
+          && (campaign.sellerOrder?.payment?.settlement !== "settled"
+            || ["fulfillment", "packaging", "packaging_failed"].includes(campaign.state)))
+        .filter((campaign) => {
+          const watchingCancellation = campaign.state === "cancellation_pending"
+            && campaign.sellerOrder?.cancellation?.state === "stop_requested";
+          if (!["completed", "cancelled", "refund_review_required", "cost_review_required"].includes(campaign.state)
+            && !watchingCancellation) return true;
+          const nextCheckAt = Date.parse(campaign.sellerOrder.payment?.nextCheckAt ?? "");
+          return !Number.isFinite(nextCheckAt) || nextCheckAt <= this.clock();
+        });
       await Promise.allSettled(active.map((campaign) => this.syncCampaign(campaign.id)));
     } finally {
       this.polling = false;
@@ -459,6 +617,22 @@ export class BuyerService {
       const decision = await this.decisionEngine.evaluate(campaign.input);
       return await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
+        if (CANCELLATION_STATES.has(current.state)) return publicCampaign(current);
+        const priorSelectionDigest = current.authorization.purchaseSelectionDigest;
+        const nextSelectionDigest = purchaseSelectionDigest({ decision });
+        if (current.input.authorizationMode === "confirm_before_purchase"
+          && current.authorization.purchaseConfirmedAt != null
+          && priorSelectionDigest !== nextSelectionDigest) {
+          current.authorization.purchaseConfirmedAt = null;
+          current.authorization.purchaseConfirmationSource = null;
+          current.authorization.purchaseSelectionDigest = null;
+          current.authorization.autoExecute = false;
+          current.authorization.authorizedAt = null;
+          current.spendReservation = null;
+          audit(state, this.clock, "campaign.purchase_confirmation_expired", campaignId, {
+            reason: "selected_quote_changed",
+          });
+        }
         current.decision = decision;
         current.state = "decision_ready";
         current.updatedAt = nowIso(this.clock);
@@ -475,6 +649,7 @@ export class BuyerService {
     } catch (error) {
       return await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
+        if (CANCELLATION_STATES.has(current.state)) return publicCampaign(current);
         current.state = "decision_failed";
         current.lastError = errorView(error, this.clock);
         current.updatedAt = nowIso(this.clock);
@@ -486,25 +661,39 @@ export class BuyerService {
 
   async #execute(campaignId, { purchaseAuthorization, requoteAttempt = 0 } = {}) {
     let campaign = this.getCampaign(campaignId);
+    if (CANCELLATION_STATES.has(campaign.state)) return await this.cancelCampaign(campaignId);
+    if (campaign.state === "payment_origin_review_required") return campaign;
     if (campaign.input.authorizationMode === "advisory_only") {
       throw new AppError("purchase_not_authorized", "This delegation authorizes advice only, not purchasing", 403);
     }
     if (campaign.input.authorizationMode === "confirm_before_purchase"
-      && campaign.authorization.purchaseConfirmedAt == null) {
+      && (campaign.authorization.purchaseConfirmedAt == null
+        || campaign.authorization.purchaseSelectionDigest !== purchaseSelectionDigest(campaign))) {
       const valid = purchaseAuthorization?.type === "delegation_purchase_confirmation"
-        && purchaseAuthorization.delegationId === campaign.input.delegationId;
+        && purchaseAuthorization.delegationId === campaign.input.delegationId
+        && typeof purchaseAuthorization.selectionDigest === "string";
       if (!valid) {
         throw new AppError("purchase_confirmation_required", "Customer purchase confirmation is required", 403);
       }
+      if (purchaseAuthorization.selectionDigest !== purchaseSelectionDigest(campaign)) {
+        throw new AppError("purchase_confirmation_stale", "The selected package or quote changed; review the current offer before confirming", 409);
+      }
       await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
+        if (CANCELLATION_STATES.has(current.state)) return;
+        if (purchaseSelectionDigest(current) !== purchaseAuthorization.selectionDigest) {
+          throw new AppError("purchase_confirmation_stale", "The selected package or quote changed; review the current offer before confirming", 409);
+        }
         current.authorization.purchaseConfirmedAt = nowIso(this.clock);
         current.authorization.purchaseConfirmationSource = "delegation";
+        current.authorization.purchaseSelectionDigest = purchaseAuthorization.selectionDigest;
         audit(state, this.clock, "campaign.purchase_confirmed", campaignId, {
           delegationId: current.input.delegationId,
+          selectionDigest: purchaseAuthorization.selectionDigest,
         });
       });
       campaign = this.getCampaign(campaignId);
+      if (CANCELLATION_STATES.has(campaign.state)) return await this.cancelCampaign(campaignId);
     }
     if (["packaging", "packaging_failed"].includes(campaign.state)) {
       return await this.#startCompletion(campaignId);
@@ -532,8 +721,14 @@ export class BuyerService {
     }
     const quote = campaign.decision?.selected?.quote;
     if (quote === undefined) throw new AppError("decision_missing", "Campaign has no selected quote", 409);
-    if (exceedsConfiguredLimit(quote.amountSats, this.policy.maxPerOrderSats)
-      || quote.amountSats > campaign.authorization.budgetSats) {
+    if ((this.paymentFeeReserveSats ?? 0) > 0
+      && (!Number.isSafeInteger(quote.sellerFeeAllowanceSats)
+        || quote.customerPriceSats !== quote.amountSats + quote.sellerFeeAllowanceSats)) {
+      throw new AppError("fee_inclusive_quote_required", "A new fee-inclusive quote is required before payment", 409);
+    }
+    const quotedTotalSats = quote.customerPriceSats ?? (quote.amountSats + (quote.sellerFeeAllowanceSats ?? this.paymentFeeReserveSats ?? Number(this.policy.maxPaymentFeeSats ?? 0)));
+    if (exceedsConfiguredLimit(quotedTotalSats, this.policy.maxPerOrderSats)
+      || quotedTotalSats > campaign.authorization.budgetSats) {
       throw new AppError("spend_not_authorized", "Selected quote exceeds Buyer spend authorization", 403);
     }
     if (campaign.input.deadlineType !== "preferred" && campaign.input.deadlineAt !== undefined) {
@@ -547,10 +742,11 @@ export class BuyerService {
     }
 
     try {
-      campaign = await this.#reserveSpend(campaignId, quote.amountSats);
+      campaign = await this.#reserveSpend(campaignId, quote.amountSats, quote.sellerFeeAllowanceSats);
     } catch (error) {
       await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
+        if (CANCELLATION_STATES.has(current.state)) return;
         current.state = "spend_blocked";
         current.lastError = errorView(error, this.clock);
         current.updatedAt = nowIso(this.clock);
@@ -558,19 +754,40 @@ export class BuyerService {
       });
       return this.getCampaign(campaignId);
     }
+    if (CANCELLATION_STATES.has(campaign.state)) return await this.cancelCampaign(campaignId);
 
     if (campaign.sellerOrder === null) {
-      await this.store.transaction((state) => {
+      const canOrder = await this.store.transaction((state) => {
+        if (CANCELLATION_STATES.has(state.campaigns[campaignId].state)) return false;
         state.campaigns[campaignId].state = "ordering";
         state.campaigns[campaignId].updatedAt = nowIso(this.clock);
+        return true;
       });
+      if (!canOrder) return await this.cancelCampaign(campaignId);
       try {
         const order = await this.seller.createOrder(quote.id, `buyer-${campaignId}-${quote.id}`);
         validateSellerOrder(order, quote, campaign, this.policy, this.clock());
         campaign = await this.store.transaction((state) => {
           const current = state.campaigns[campaignId];
           current.sellerOrder = order;
-          current.state = "awaiting_payment";
+          if (!CANCELLATION_STATES.has(current.state)) {
+            if (order.payment.status === "paid") {
+              current.state = "payment_origin_review_required";
+              current.paymentOriginReviewAt ??= nowIso(this.clock);
+              current.lastError = {
+                code: "payment_origin_unverified",
+                message: "Seller invoice is already paid before this Buyer submitted a payment",
+                at: nowIso(this.clock),
+              };
+              current.spendReservation.status = "uncertain";
+              audit(state, this.clock, "payment.origin_review_required", campaignId, {
+                paymentId: order.payment.id,
+                reason: "invoice_paid_before_buyer_submission",
+              });
+            } else {
+              current.state = "awaiting_payment";
+            }
+          }
           current.updatedAt = nowIso(this.clock);
           audit(state, this.clock, "seller.order_created", campaignId, {
             orderId: order.id,
@@ -579,17 +796,31 @@ export class BuyerService {
           });
           return publicCampaign(current);
         });
+        if (CANCELLATION_STATES.has(campaign.state)) return await this.cancelCampaign(campaignId);
       } catch (error) {
         await this.store.transaction((state) => {
           const current = state.campaigns[campaignId];
-          current.spendReservation = null;
+          if (CANCELLATION_STATES.has(current.state)) {
+            current.cancellation.lastError = errorView(error, this.clock);
+            return;
+          }
+          // A timeout or mismatched Seller response may follow an invoice that
+          // was actually created. Keep its allocation until the original
+          // idempotent order is reconciled; only a confirmed expired quote
+          // proves no invoice was issued.
+          if (error.code === "quote_expired") current.spendReservation = null;
+          else if (current.spendReservation) current.spendReservation.status = "uncertain";
           current.state = "order_failed";
           current.lastError = errorView(error, this.clock);
           current.updatedAt = nowIso(this.clock);
           audit(state, this.clock, "seller.order_failed", campaignId, { code: current.lastError.code });
         });
+        if (CANCELLATION_STATES.has(this.getCampaign(campaignId).state)) return this.getCampaign(campaignId);
         if (error.code === "quote_expired" && requoteAttempt < 1) {
-          await this.#evaluate(campaignId);
+          const reselected = await this.#evaluate(campaignId);
+          if (reselected.state !== "decision_ready"
+            || (reselected.input.authorizationMode === "confirm_before_purchase"
+              && reselected.authorization.purchaseConfirmedAt == null)) return reselected;
           return await this.#execute(campaignId, { purchaseAuthorization, requoteAttempt: requoteAttempt + 1 });
         }
         return this.getCampaign(campaignId);
@@ -597,29 +828,39 @@ export class BuyerService {
     }
 
     campaign = this.getCampaign(campaignId);
+    if (CANCELLATION_STATES.has(campaign.state)) return await this.cancelCampaign(campaignId);
+    if (campaign.state === "payment_origin_review_required") return campaign;
     if (campaign.paymentAttempt?.status === "uncertain") return await this.syncCampaign(campaignId);
     if (campaign.paymentAttempt?.status === "submitted") return await this.syncCampaign(campaignId);
 
     if (campaign.paymentAttempt?.prepared === undefined) {
-      await this.store.transaction((state) => {
+      const canPrepare = await this.store.transaction((state) => {
+        if (CANCELLATION_STATES.has(state.campaigns[campaignId].state)) return false;
         state.campaigns[campaignId].state = "signing";
         state.campaigns[campaignId].updatedAt = nowIso(this.clock);
+        return true;
       });
+      if (!canPrepare) return await this.cancelCampaign(campaignId);
       try {
         await this.#assertPaymentsEnabled();
         const prepared = await this.wallet.preparePayment({
           paymentId: campaign.sellerOrder.payment.id,
           amountSats: campaign.sellerOrder.amountSats,
           recipientAddress: campaign.sellerOrder.payment.btcAddress,
+          maxFeeSats: quote.sellerFeeAllowanceSats ?? this.paymentFeeReserveSats ?? Number(this.policy.maxPaymentFeeSats ?? 0),
         });
         await this.store.transaction((state) => {
           const current = state.campaigns[campaignId];
+          if (CANCELLATION_STATES.has(current.state)) return;
           const feeSats = Number(prepared.validation?.feeSats ?? prepared.summary?.feeSats ?? 0);
           const totalSats = current.sellerOrder.amountSats + feeSats;
-          if (!Number.isSafeInteger(feeSats) || feeSats < 0 || totalSats > current.authorization.budgetSats) {
+          const quotedTotalSats = quote.customerPriceSats ?? (quote.amountSats + (quote.sellerFeeAllowanceSats ?? this.paymentFeeReserveSats ?? Number(this.policy.maxPaymentFeeSats ?? 0)));
+          if (!Number.isSafeInteger(feeSats) || feeSats < 0
+            || totalSats > quotedTotalSats || totalSats > current.authorization.budgetSats) {
             throw new AppError("campaign_budget_exceeded", "Payment amount plus network fee exceeds the authorized budget", 403, {
               amountSats: current.sellerOrder.amountSats,
               feeSats,
+              quotedTotalSats,
               budgetSats: current.authorization.budgetSats,
             });
           }
@@ -641,6 +882,7 @@ export class BuyerService {
       } catch (error) {
         await this.store.transaction((state) => {
           const current = state.campaigns[campaignId];
+          if (CANCELLATION_STATES.has(current.state)) return;
           current.spendReservation = null;
           current.state = error.code === "payments_disabled" ? "spend_blocked" : "payment_preparation_failed";
           current.lastError = errorView(error, this.clock);
@@ -651,12 +893,15 @@ export class BuyerService {
       }
     }
 
+    campaign = this.getCampaign(campaignId);
+    if (CANCELLATION_STATES.has(campaign.state)) return await this.cancelCampaign(campaignId);
     const prepared = this.store.snapshot().campaigns[campaignId].paymentAttempt.prepared;
     try {
       await this.#assertPaymentsEnabled();
     } catch (error) {
       await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
+        if (CANCELLATION_STATES.has(current.state)) return;
         current.state = "spend_blocked";
         current.spendReservation = null;
         discardSignedPsbt(current);
@@ -666,8 +911,9 @@ export class BuyerService {
       });
       return this.getCampaign(campaignId);
     }
-    await this.store.transaction((state) => {
+    const canSubmit = await this.store.transaction((state) => {
       const current = state.campaigns[campaignId];
+      if (CANCELLATION_STATES.has(current.state)) return false;
       current.state = "submitting_payment";
       current.paymentAttempt.status = "submitting";
       current.spendReservation ??= {
@@ -678,12 +924,14 @@ export class BuyerService {
       current.spendReservation.status = "submitting";
       current.paymentAttempt.submissionStartedAt = nowIso(this.clock);
       current.updatedAt = nowIso(this.clock);
+      return true;
     });
+    if (!canSubmit) return await this.cancelCampaign(campaignId);
     try {
       const receipt = await this.wallet.submitPrepared(prepared);
       await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
-        current.state = "payment_submitted";
+        if (!CANCELLATION_STATES.has(current.state)) current.state = "payment_submitted";
         current.paymentAttempt.status = "submitted";
         current.spendReservation.status = "submitted";
         current.paymentAttempt.receipt = receipt;
@@ -702,7 +950,7 @@ export class BuyerService {
     } catch (error) {
       await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
-        current.state = "payment_uncertain";
+        if (!CANCELLATION_STATES.has(current.state)) current.state = "payment_uncertain";
         current.paymentAttempt.status = "uncertain";
         current.spendReservation.status = "uncertain";
         current.paymentAttempt.error = errorView(error, this.clock);
@@ -743,11 +991,15 @@ export class BuyerService {
             fulfillment: current.fulfillmentResult,
             campaignPackage,
           };
-          current.state = "completed";
-          current.completedAt = nowIso(this.clock);
+          current.packagingCompletedAt = nowIso(this.clock);
+          if (!current.cancellation?.requestedAt) {
+            current.state = "completed";
+            current.completedAt = nowIso(this.clock);
+          }
           current.updatedAt = nowIso(this.clock);
           current.lastError = null;
-          audit(state, this.clock, "campaign.completed", campaignId, {
+          audit(state, this.clock, current.cancellation?.requestedAt
+            ? "campaign.packaging_completed_during_review" : "campaign.completed", campaignId, {
             files: campaignPackage.files.map((file) => file.path),
             spentSats: current.spentSats,
             remainingBudgetSats: current.remainingBudgetSats,
@@ -757,7 +1009,7 @@ export class BuyerService {
       } catch (error) {
         return await this.store.transaction((state) => {
           const current = state.campaigns[campaignId];
-          current.state = "packaging_failed";
+          if (!current.cancellation?.requestedAt) current.state = "packaging_failed";
           current.lastError = errorView(error, this.clock);
           current.updatedAt = nowIso(this.clock);
           audit(state, this.clock, "campaign.packaging_failed", campaignId, { code: current.lastError.code });
@@ -769,21 +1021,31 @@ export class BuyerService {
     return task;
   }
 
-  async #reserveSpend(campaignId, amountSats) {
+  async #reserveSpend(campaignId, amountSats, quoteFeeReserveSats) {
     const policy = await this.#currentPolicy();
     return await this.store.transaction((state) => {
       const campaign = state.campaigns[campaignId];
-      if (activeReservation(campaign.spendReservation) && campaign.spendReservation?.amountSats === amountSats) {
+      if (CANCELLATION_STATES.has(campaign.state)) return publicCampaign(campaign);
+      const feeReserveSats = quoteFeeReserveSats ?? this.paymentFeeReserveSats ?? Number(policy.maxPaymentFeeSats ?? 0);
+      if (!Number.isSafeInteger(feeReserveSats) || feeReserveSats < 0
+        || feeReserveSats > Number(policy.maxPaymentFeeSats ?? this.paymentFeeReserveSats ?? 0)) {
+        throw new AppError("invalid_fee_allowance", "Quote network-fee allowance exceeds Buyer policy", 403);
+      }
+      if (activeReservation(campaign.spendReservation)
+        && campaign.spendReservation?.amountSats === amountSats
+        && campaign.spendReservation?.feeReserveSats === feeReserveSats) {
         if (policy.paymentsEnabled === false) {
           throw new AppError("payments_disabled", "Buyer payment execution is disabled by policy", 503);
         }
         return publicCampaign(campaign);
       }
+      if (activeReservation(campaign.spendReservation)) {
+        throw new AppError("spend_reservation_conflict", "An existing payment reservation belongs to a different quote", 409);
+      }
       if (campaign.spentSats > 0) return publicCampaign(campaign);
       if (policy.paymentsEnabled === false) {
         throw new AppError("payments_disabled", "Buyer payment execution is disabled by policy", 503);
       }
-      const feeReserveSats = this.paymentFeeReserveSats ?? Number(policy.maxPaymentFeeSats ?? 0);
       const totalReservedSats = amountSats + feeReserveSats;
       if (totalReservedSats > campaign.authorization.budgetSats) {
         throw new AppError("campaign_budget_exceeded", "Order amount plus the maximum network fee exceeds the authorized budget", 403, {

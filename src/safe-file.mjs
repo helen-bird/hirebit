@@ -1,4 +1,5 @@
 import { constants } from "node:fs";
+import { createHash } from "node:crypto";
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
@@ -39,7 +40,24 @@ export function streamRegularFile(response, file) {
   // Keep FileHandle and stream ownership aligned. Passing handle.fd to fs.createReadStream
   // with autoClose=true closes the descriptor behind FileHandle's back, which can make
   // Node 24 attempt a second close during FileHandle garbage collection and terminate.
-  const stream = file.handle.createReadStream({ autoClose: true });
+  const stream = file.handle.createReadStream({ start: 0, autoClose: true });
   stream.once("error", (error) => response.destroy(error));
   stream.pipe(response);
+}
+
+export async function verifyRegularFileDigest(file, expectedSha256, expectedBytes, errorCode = "file_integrity_failed") {
+  try {
+    if (!/^[a-f0-9]{64}$/u.test(expectedSha256)
+      || !Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || file.size !== expectedBytes) {
+      throw new AppError(errorCode, "The file does not match its recorded delivery manifest", 503);
+    }
+    const hash = createHash("sha256");
+    for await (const chunk of file.handle.createReadStream({ start: 0, autoClose: false })) hash.update(chunk);
+    if (hash.digest("hex") !== expectedSha256) {
+      throw new AppError(errorCode, "The file does not match its recorded delivery manifest", 503);
+    }
+  } catch (error) {
+    await file.handle.close();
+    throw error;
+  }
 }

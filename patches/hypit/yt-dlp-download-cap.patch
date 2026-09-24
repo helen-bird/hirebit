@@ -1,0 +1,189 @@
+diff --git a/packages/yt-dlp/src/download.ts b/packages/yt-dlp/src/download.ts
+index 4af2707..f12db09 100644
+--- a/packages/yt-dlp/src/download.ts
++++ b/packages/yt-dlp/src/download.ts
+@@ -13,2 +13,2 @@
+-import { spawnSync } from "node:child_process";
+-import { copyFile, mkdtemp, readdir, rename, rm } from "node:fs/promises";
++import { spawn, spawnSync } from "node:child_process";
++import { copyFile, lstat, mkdtemp, readdir, rename, rm } from "node:fs/promises";
+@@ -19,0 +20,113 @@ import { requireVideoDownload } from "./environment.js";
++const DEFAULT_MAX_FETCH_BYTES = 1_000_000_000;
++
++function maxFetchBytes(): number {
++  const requested = Number(process.env.HYPIT_FETCH_MAX_BYTES ?? DEFAULT_MAX_FETCH_BYTES);
++  if (!Number.isSafeInteger(requested) || requested < 1) {
++    throw new Error("HYPIT_FETCH_MAX_BYTES must be a positive integer");
++  }
++  return Math.min(requested, DEFAULT_MAX_FETCH_BYTES);
++}
++
++async function stagedBytes(directory: string): Promise<{ total: number; largest: number }> {
++  let total = 0;
++  let largest = 0;
++  let entries;
++  try { entries = await readdir(directory, { withFileTypes: true }); }
++  catch (error) {
++    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { total, largest };
++    throw error;
++  }
++  for (const entry of entries) {
++    const path = join(directory, entry.name);
++    if (entry.isDirectory()) {
++      const nested = await stagedBytes(path);
++      total += nested.total;
++      largest = Math.max(largest, nested.largest);
++    }
++    else if (entry.isFile()) {
++      try {
++        const size = (await lstat(path)).size;
++        total += size;
++        largest = Math.max(largest, size);
++      }
++      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
++    }
++  }
++  return { total, largest };
++}
++
++function exceedsStageLimit(sizes: { total: number; largest: number }, maxBytes: number): boolean {
++  // yt-dlp can hold video, audio and the muxed MP4 concurrently. Limit each media
++  // file to the customer's cap while bounding this temporary amplification to 3x.
++  return sizes.largest > maxBytes || sizes.total > maxBytes * 3;
++}
++
++function sizeLimitError(maxBytes: number): Error {
++  const error = new Error(`Reference video exceeds the ${maxBytes}-byte download limit`) as Error & { code: string };
++  error.code = "REFERENCE_VIDEO_TOO_LARGE";
++  return error;
++}
++
++async function boundedFetch(executable: string, args: string[], work: string, maxBytes: number): Promise<void> {
++  const child = spawn(executable, args, {
++    stdio: ["ignore", "ignore", "pipe"], windowsHide: true,
++    // yt-dlp invokes ffmpeg. On Unix, isolate the process group so a limit or timeout
++    // can stop both processes before the staging directory is removed.
++    detached: process.platform !== "win32",
++  });
++  let stderr = "";
++  child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk}`.slice(-2000); });
++  let exited = false;
++  let stopped: "size" | "timeout" | "monitor" | "interrupted" | null = null;
++  const stopTree = (reason: "size" | "timeout" | "monitor" | "interrupted"): void => {
++    if (exited || stopped !== null) return;
++    stopped = reason;
++    if (process.platform === "win32" && child.pid !== undefined) {
++      // Node's child.kill does not stop ffmpeg descendants on Windows.
++      const killed = spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, timeout: 15_000 });
++      if (killed.status !== 0) child.kill("SIGKILL");
++    } else if (child.pid !== undefined) {
++      try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
++    } else {
++      child.kill("SIGKILL");
++    }
++  };
++  const interrupt = (): void => stopTree("interrupted");
++  process.once("SIGTERM", interrupt);
++  process.once("SIGINT", interrupt);
++  let checkPending: Promise<void> | null = null;
++  const check = (): void => {
++    if (exited || stopped !== null || checkPending !== null) return;
++    checkPending = (async () => {
++      if (exceedsStageLimit(await stagedBytes(work), maxBytes)) stopTree("size");
++    })().catch(() => { stopTree("monitor"); }).finally(() => { checkPending = null; });
++  };
++  const monitor = setInterval(check, 50);
++  const timeout = setTimeout(() => stopTree("timeout"), 900_000);
++  let result: { code: number | null; signal: NodeJS.Signals | null; error?: Error };
++  try {
++    result = await new Promise((resolvePromise) => {
++      let spawnError: Error | undefined;
++      child.once("error", (error) => { spawnError = error; });
++      child.once("close", (code, signal) => {
++        exited = true;
++        resolvePromise({ code, signal, ...(spawnError === undefined ? {} : { error: spawnError }) });
++      });
++    });
++  } finally {
++    clearInterval(monitor);
++    clearTimeout(timeout);
++    process.removeListener("SIGTERM", interrupt);
++    process.removeListener("SIGINT", interrupt);
++    if (checkPending !== null) await checkPending;
++  }
++  if (stopped === "size" || exceedsStageLimit(await stagedBytes(work), maxBytes)) {
++    throw sizeLimitError(maxBytes);
++  }
++  if (stopped === "timeout") throw new Error("Reference video download timed out");
++  if (stopped === "monitor") throw new Error("Reference video size could not be monitored safely");
++  if (stopped === "interrupted") throw new Error("Reference video download was interrupted");
++  if (result.error !== undefined) throw result.error;
++  if (result.code !== 0) throw new Error(`yt-dlp could not fetch the video: ${stderr.trim()}`);
++}
++
+@@ -50,0 +164 @@ export async function downloadVideo(url: string, target: string): Promise<void>
++  const maxBytes = maxFetchBytes();
+@@ -55 +169 @@ export async function downloadVideo(url: string, target: string): Promise<void>
+-    const result = spawnSync(executable, [
++    await boundedFetch(executable, [
+@@ -58,0 +173 @@ export async function downloadVideo(url: string, target: string): Promise<void>
++      "--max-filesize", String(maxBytes),
+@@ -64,6 +179 @@ export async function downloadVideo(url: string, target: string): Promise<void>
+-    ], { encoding: "utf8", windowsHide: true, timeout: 900_000 });
+-
+-    if (result.error !== undefined) throw result.error;
+-    if (result.status !== 0) {
+-      throw new Error(`yt-dlp could not fetch ${url}: ${(result.stderr ?? "").trim().slice(-2000)}`);
+-    }
++    ], work, maxBytes);
+@@ -73,0 +184 @@ export async function downloadVideo(url: string, target: string): Promise<void>
++    if ((await lstat(staged)).size > maxBytes) throw sizeLimitError(maxBytes);
+diff --git a/packages/yt-dlp/test/download.test.ts b/packages/yt-dlp/test/download.test.ts
+index ea5da85..d6fbf63 100644
+--- a/packages/yt-dlp/test/download.test.ts
++++ b/packages/yt-dlp/test/download.test.ts
+@@ -3 +3 @@ import { existsSync, writeFileSync } from "node:fs";
+-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
++import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+@@ -6,0 +7 @@ import childProcess from "node:child_process";
++import { EventEmitter } from "node:events";
+@@ -7,0 +9 @@ import { syncBuiltinESMExports } from "node:module";
++import { PassThrough } from "node:stream";
+@@ -60,0 +63 @@ test("download resolves its declared service from an installed package outside t
++  let oversized = false;
+@@ -65,0 +69,4 @@ test("download resolves its declared service from an installed package outside t
++    throw new Error(`Unexpected synchronous command: ${command}`);
++  });
++  t.mock.method(childProcess, "spawn", (command: string, args: string[]) => {
++    calls++;
+@@ -68,0 +76,2 @@ test("download resolves its declared service from an installed package outside t
++    assert.ok(args.includes("--max-filesize"));
++    assert.equal(args[args.indexOf("--max-filesize") + 1], oversized ? "8" : "1000000000");
+@@ -71,2 +80,8 @@ test("download resolves its declared service from an installed package outside t
+-    writeFileSync(output, "downloaded bytes");
+-    return { status: 0, stderr: "", stdout: "" };
++    const child = new EventEmitter() as ReturnType<typeof childProcess.spawn>;
++    Object.assign(child, {
++      stderr: new PassThrough(),
++      kill() { queueMicrotask(() => child.emit("close", null, "SIGKILL")); return true; },
++    });
++    writeFileSync(output, oversized ? "123456789" : "downloaded bytes");
++    if (!oversized) queueMicrotask(() => child.emit("close", 0, null));
++    return child;
+@@ -80,0 +96,16 @@ test("download resolves its declared service from an installed package outside t
++
++  oversized = true;
++  const priorLimit = process.env.HYPIT_FETCH_MAX_BYTES;
++  const priorTmp = process.env.TMPDIR;
++  process.env.HYPIT_FETCH_MAX_BYTES = "8";
++  process.env.TMPDIR = directory;
++  try {
++    await assert.rejects(module.downloadVideo("https://example.test/video", join(directory, "oversized.mp4")), /exceeds the 8-byte download limit/u);
++    assert.equal(existsSync(join(directory, "oversized.mp4")), false);
++    assert.equal((await readdir(directory)).some((name) => name.startsWith("hypit-fetch-")), false);
++  } finally {
++    if (priorLimit === undefined) delete process.env.HYPIT_FETCH_MAX_BYTES;
++    else process.env.HYPIT_FETCH_MAX_BYTES = priorLimit;
++    if (priorTmp === undefined) delete process.env.TMPDIR;
++    else process.env.TMPDIR = priorTmp;
++  }

@@ -4,9 +4,9 @@ import { access, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:f
 import { basename, extname, join, resolve } from "node:path";
 
 import ffmpegStatic from "ffmpeg-static";
-import ffprobeStatic from "ffprobe-static";
 
 import { AppError } from "./errors.mjs";
+import { probeMedia } from "./media-probe.mjs";
 import { REFERENCE_VISION_PLAN_FORMAT, validateReferenceVisionPlan } from "./reference-vision-planner.mjs";
 import {
   MAX_PRODUCTION_VARIANTS,
@@ -193,28 +193,6 @@ async function exists(path) {
   try { await access(path); return true; } catch { return false; }
 }
 
-function probe(path) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(ffprobeStatic.path, [
-      "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", path,
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout = `${stdout}${chunk}`.slice(-1_000_000); });
-    child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-20_000); });
-    child.once("error", reject);
-    child.once("close", (code) => {
-      if (code !== 0) {
-        reject(new AppError("production_asset_invalid", "A configured production asset could not be inspected", 503, { stderr }));
-        return;
-      }
-      try { resolvePromise(JSON.parse(stdout)); } catch {
-        reject(new AppError("production_asset_invalid", "Asset inspection returned invalid data", 503));
-      }
-    });
-  });
-}
-
 async function copyConfiguredAsset(rootDir, projectDir, path, label) {
   if (typeof path !== "string" || path.trim() === "") {
     throw new AppError("production_asset_missing", `${label} is not configured`, 503);
@@ -228,7 +206,7 @@ async function copyConfiguredAsset(rootDir, projectDir, path, label) {
 }
 
 async function imageExtent(path) {
-  const details = await probe(path);
+  const details = await probeMedia(path);
   const stream = details.streams?.find((item) => item.codec_type === "video" && Number(item.width) > 0 && Number(item.height) > 0);
   if (stream === undefined) throw new AppError("production_asset_invalid", "Production image has no decodable visual stream", 503);
   return { width: Number(stream.width), height: Number(stream.height) };
@@ -236,7 +214,7 @@ async function imageExtent(path) {
 
 async function audioDurations(assets) {
   return await Promise.all(assets.map(async (asset) => {
-    const details = await probe(asset.destination);
+    const details = await probeMedia(asset.destination);
     const duration = Number(details.format?.duration);
     return Number.isFinite(duration) && duration > 0 ? duration : 1;
   }));

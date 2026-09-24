@@ -217,7 +217,7 @@ export class InstantWalletClient {
     }
   }
 
-  async preparePayment({ paymentId, amountSats, recipientAddress }) {
+  async preparePayment({ paymentId, amountSats, recipientAddress, maxFeeSats = this.maxFeeSats }) {
     if (typeof this.multisigAddress !== "string" || !this.multisigAddress.startsWith("bc1")) {
       throw new AppError(
         "wallet_not_registered",
@@ -234,6 +234,9 @@ export class InstantWalletClient {
     if (typeof recipientAddress !== "string" || recipientAddress === "") {
       throw new AppError("invalid_payment_intent", "Authorized payment recipient is required");
     }
+    if (!Number.isSafeInteger(maxFeeSats) || maxFeeSats < 0 || maxFeeSats > this.maxFeeSats) {
+      throw new AppError("invalid_payment_intent", "Authorized network-fee allowance is invalid");
+    }
     const token = await this.#jwt();
     const built = await this.#post(
       "/instant/psbt/build-transaction-to-sign-payment",
@@ -246,6 +249,7 @@ export class InstantWalletClient {
     const validation = await this.#validatePsbt(built.psbtBase64, built.summary, {
       amountSats,
       recipientAddress,
+      maxFeeSats,
     });
     return {
       paymentId,
@@ -264,7 +268,13 @@ export class InstantWalletClient {
       { paymentId, jobId, signedPsbtBase64 },
       token,
     );
-    if (typeof submitted?.paymentTxId !== "string" || submitted.paymentTxId === "") {
+    if (submitted?.paymentId !== paymentId) {
+      throw new AppError("gobtcpay_receipt_mismatch", "GoBTC Pay receipt belongs to a different payment", 502);
+    }
+    // paymentTxId is a GoBTC platform receipt, not necessarily a Bitcoin txid.
+    // Keep it bounded and log-safe without imposing an on-chain hash format.
+    if (typeof submitted.paymentTxId !== "string"
+      || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/u.test(submitted.paymentTxId)) {
       throw new AppError("gobtcpay_invalid_response", "GoBTC Pay did not return a payment receipt", 502);
     }
     return {
@@ -332,7 +342,7 @@ export class InstantWalletClient {
     }
   }
 
-  async #validatePsbt(psbtBase64, summary, { amountSats, recipientAddress }) {
+  async #validatePsbt(psbtBase64, summary, { amountSats, recipientAddress, maxFeeSats = this.maxFeeSats }) {
     if (summary === null || typeof summary !== "object") {
       throw new AppError("psbt_summary_missing", "GoBTC Pay did not return the required transaction summary", 502);
     }
@@ -391,10 +401,10 @@ export class InstantWalletClient {
       throw new AppError("psbt_intent_mismatch", "PSBT recipient or amount differs from the authorized order", 502);
     }
     const fee = inputTotal - outputTotal;
-    if (fee < 0n || fee > BigInt(this.maxFeeSats)) {
+    if (fee < 0n || fee > BigInt(maxFeeSats)) {
       throw new AppError("psbt_fee_exceeded", "PSBT fee exceeds Buyer policy", 403, {
         feeSats: fee.toString(),
-        maxFeeSats: this.maxFeeSats,
+        maxFeeSats,
       });
     }
     const feeRate = number(summary.feeRateSatVb, "summary.feeRateSatVb");

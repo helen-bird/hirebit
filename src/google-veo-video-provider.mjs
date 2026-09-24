@@ -8,6 +8,8 @@ import ffmpegStatic from "ffmpeg-static";
 
 import { AppError } from "./errors.mjs";
 import { REFERENCE_VISION_PLAN_FORMAT, validateReferenceVisionPlan } from "./reference-vision-planner.mjs";
+import { assertProductionMaySpend } from "./production-cancellation.mjs";
+import { withSellerOperationLock } from "./seller-provider-attempt.mjs";
 
 const execute = promisify(execFile);
 const FORMAT = "seller.google-veo-input@1";
@@ -68,6 +70,7 @@ export class GoogleVeoVideoProvider {
     pollIntervalMs = 15_000,
     maxWaitMs = 12 * 60_000,
     clock = Date.now,
+    spendAllowed = null,
   }) {
     this.provider = "google-vertex-veo";
     this.projectId = projectId?.trim();
@@ -85,6 +88,8 @@ export class GoogleVeoVideoProvider {
     this.pollIntervalMs = pollIntervalMs;
     this.maxWaitMs = maxWaitMs;
     this.clock = clock;
+    this.spendAllowed = spendAllowed;
+    this.reservationTail = Promise.resolve();
   }
 
   readiness() {
@@ -192,6 +197,7 @@ export class GoogleVeoVideoProvider {
       "Do not copy the source person's face, body, clothing, identity, or likeness. Do not invent brand claims, logos, labels, captions, price text, watermarks, extra products, duplicate hands, or floating objects. Keep the lower third clean for later Hypit graphics.",
     ].join(" ").slice(0, 2_500);
     const firstPath = referencePlan === null ? outputPath : join(outputRoot, "product-motion-1.mp4");
+    await assertProductionMaySpend(jobDir, { orderId: order.id, spendAllowed: this.spendAllowed });
     const first = await this.#generateSegment({
       order,
       quote,
@@ -223,6 +229,7 @@ export class GoogleVeoVideoProvider {
         "Do not copy the source person's identity or likeness. Do not add logos, claims, captions, watermarks, extra products, duplicate hands, or floating objects.",
       ].join(" ").slice(0, 2_500);
       const secondPath = join(outputRoot, "product-motion-2.mp4");
+      await assertProductionMaySpend(jobDir, { orderId: order.id, spendAllowed: this.spendAllowed });
       segments.push(await this.#generateSegment({
         order,
         quote,
@@ -273,6 +280,20 @@ export class GoogleVeoVideoProvider {
     prompt, image, imageMediaType, imageSha256, outputRoot, outputPath,
   }) {
     const receiptPath = join(outputRoot, `receipt-${segmentIndex}.json`);
+    return await withSellerOperationLock({
+      path: receiptPath,
+      uncertainCode: "google_veo_submission_uncertain",
+    }, () => this.#generateSegmentUnlocked({
+      order, quote, commissionSha256, referenceAdaptationSha256, segmentIndex,
+      prompt, image, imageMediaType, imageSha256, outputRoot, outputPath,
+    }));
+  }
+
+  async #generateSegmentUnlocked({
+    order, quote, commissionSha256, referenceAdaptationSha256, segmentIndex,
+    prompt, image, imageMediaType, imageSha256, outputRoot, outputPath,
+  }) {
+    const receiptPath = join(outputRoot, `receipt-${segmentIndex}.json`);
     const promptSha256 = sha256(Buffer.from(prompt));
     let receipt = await readJson(receiptPath);
     if (receipt !== null && (receipt.segmentIndex !== segmentIndex || receipt.promptSha256 !== promptSha256
@@ -289,58 +310,53 @@ export class GoogleVeoVideoProvider {
         bytes: bytes.length, durationSeconds: 8, promptSha256, receiptSha256: sha256(await readFile(receiptPath)),
       };
     }
-    if (receipt === null) {
-      await this.#reserve(`${order.id}:segment-${segmentIndex}`, order.id, segmentIndex);
-      receipt = {
-        format: FORMAT,
-        orderId: order.id,
-        productId: quote.product.id,
-        segmentIndex,
-        commissionSha256,
-        inputImageSha256: imageSha256,
-        referenceAdaptationSha256,
-        model: this.model,
-        promptSha256,
-        status: "submitting",
-        createdAt: new Date(this.clock()).toISOString(),
-      };
+    while (receipt === null || ["submitting", "submission_uncertain"].includes(receipt.status)) {
+      // A receipt written before a crash counts as a possible billed call.
+      // Never submit a third time, and never resubmit an identified operation.
+      const attempt = receipt === null ? 1 : (receipt.submissionAttempts ?? 1) + 1;
+      if (attempt > 2) {
+        throw new AppError("google_veo_submission_uncertain", "Seller exhausted two Veo submission attempts; Buyer is not charged again", 503);
+      }
+      await this.#reserve(`${order.id}:segment-${segmentIndex}:attempt-${attempt}`, order.id, segmentIndex);
+      if (receipt === null) {
+        receipt = {
+          format: FORMAT, orderId: order.id, productId: quote.product.id, segmentIndex,
+          commissionSha256, inputImageSha256: imageSha256, referenceAdaptationSha256,
+          model: this.model, promptSha256, createdAt: new Date(this.clock()).toISOString(),
+        };
+      }
+      receipt.status = "submitting";
+      receipt.submissionAttempts = attempt;
       await writeJsonAtomic(receiptPath, receipt);
       let submitted;
       try {
+        await assertProductionMaySpend(dirname(outputRoot), { orderId: order.id, spendAllowed: this.spendAllowed });
         submitted = await this.#request("predictLongRunning", {
-          instances: [{
-            prompt,
-            image: { bytesBase64Encoded: image.toString("base64"), mimeType: imageMediaType },
-          }],
+          instances: [{ prompt, image: { bytesBase64Encoded: image.toString("base64"), mimeType: imageMediaType } }],
           parameters: {
-            aspectRatio: "9:16",
-            durationSeconds: 8,
-            sampleCount: 1,
-            resolution: "720p",
-            resizeMode: "crop",
-            personGeneration: "allow_adult",
-            generateAudio: false,
-            enhancePrompt: true,
+            aspectRatio: "9:16", durationSeconds: 8, sampleCount: 1, resolution: "720p",
+            resizeMode: "crop", personGeneration: "allow_adult", generateAudio: false, enhancePrompt: true,
           },
         });
       } catch (error) {
-        receipt.status = "submission_uncertain";
+        receipt.status = error.code === "production_cancelled_before_billable_step"
+          ? "cancelled_before_submission" : "submission_uncertain";
         receipt.error = { code: error.code ?? "google_veo_submission_failed", message: error.message };
         await writeJsonAtomic(receiptPath, receipt);
-        throw error;
+        if (receipt.status === "cancelled_before_submission") throw error;
+        continue;
       }
       if (typeof submitted?.name !== "string" || submitted.name === "") {
         receipt.status = "submission_uncertain";
+        receipt.error = { code: "google_veo_submission_uncertain", message: "Veo returned no operation id" };
         await writeJsonAtomic(receiptPath, receipt);
-        throw new AppError("google_veo_submission_uncertain", "Veo returned no durable operation id; automatic resubmission is disabled", 503);
+        continue;
       }
       receipt.operationName = submitted.name;
       receipt.status = "submitted";
       receipt.submittedAt = new Date(this.clock()).toISOString();
+      delete receipt.error;
       await writeJsonAtomic(receiptPath, receipt);
-    }
-    if (receipt.status === "submission_uncertain") {
-      throw new AppError("google_veo_submission_uncertain", "Veo submission outcome is uncertain; automatic resubmission is disabled", 503);
     }
     if (typeof receipt.operationName !== "string" || receipt.operationName === "") {
       throw new AppError("google_veo_receipt_invalid", "Veo segment receipt has no operation id", 503);
@@ -431,6 +447,12 @@ export class GoogleVeoVideoProvider {
   }
 
   async #reserve(reservationId, orderId, segmentIndex) {
+    const reservation = this.reservationTail.then(() => this.#reserveUnlocked(reservationId, orderId, segmentIndex));
+    this.reservationTail = reservation.catch(() => {});
+    return await reservation;
+  }
+
+  async #reserveUnlocked(reservationId, orderId, segmentIndex) {
     await mkdir(dirname(resolve(this.ledgerFile)), { recursive: true, mode: 0o700 });
     const ledger = await readJson(this.ledgerFile, { format: LEDGER_FORMAT, entries: {} });
     if (ledger.format !== LEDGER_FORMAT || ledger.entries === null || typeof ledger.entries !== "object") {

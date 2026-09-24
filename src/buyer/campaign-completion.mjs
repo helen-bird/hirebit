@@ -58,7 +58,9 @@ function markdown(summary, testingPlan, paymentProof, creativeFiles) {
     "",
     `- Objective: ${summary.objective}`,
     `- Selected package: ${summary.selectedProduct.name}`,
-    `- Spend: ${summary.spend.spentSats} sats`,
+    `- Service price: ${summary.spend.invoiceSats} sats`,
+    `- Payment fee: ${summary.spend.networkFeeSats} sats${paymentProof.simulated ? " (simulated)" : ""}`,
+    `- Total spend: ${summary.spend.spentSats} sats`,
     `- Remaining budget: ${summary.spend.remainingBudgetSats} sats`,
     `- Payment authorization: ${paymentProof.authorization}`,
     `- Settlement: ${paymentProof.settlement}`,
@@ -80,7 +82,6 @@ function markdown(summary, testingPlan, paymentProof, creativeFiles) {
     "",
     "## Payment proof",
     "",
-    `- GoBTC payment ID: ${paymentProof.paymentId ?? "pending"}`,
     `- Instant receipt: ${paymentProof.instantReceiptId ?? "pending"}`,
     `- On-chain txids: ${paymentProof.txids.length > 0 ? paymentProof.txids.join(", ") : "pending settlement"}`,
     "",
@@ -93,7 +94,6 @@ function paymentProofFor(campaign) {
   const payment = order?.payment ?? {};
   const simulated = payment.simulated === true || campaign.paymentAttempt?.receipt?.simulated === true;
   return {
-    paymentId: payment.id ?? null,
     instantReceiptId: campaign.paymentAttempt?.receipt?.instantReceiptId ?? null,
     authorization: payment.authorization ?? "pending",
     settlement: payment.settlement ?? "pending",
@@ -148,6 +148,12 @@ export class CampaignCompletionService {
       if (usedNames.has(name)) name = `${index + 1}-${name}`;
       usedNames.add(name);
       const downloaded = await this.seller.downloadArtifact(order.id, artifact.name);
+      const downloadedSha256 = sha256(downloaded.data);
+      if (artifact.sha256 !== undefined || artifact.bytes !== undefined) {
+        if (artifact.sha256 !== downloadedSha256 || artifact.bytes !== downloaded.data.byteLength) {
+          throw new AppError("seller_artifact_integrity_failed", "Seller artifact differs from the completed production record", 502);
+        }
+      }
       const path = `creatives/${name}`;
       await atomicWrite(join(root, path), downloaded.data);
       creativeFiles.push({
@@ -156,7 +162,7 @@ export class CampaignCompletionService {
         url: fileUrl(campaign.id, path),
         mediaType: artifact.mediaType ?? downloaded.mediaType,
         bytes: downloaded.data.byteLength,
-        sha256: sha256(downloaded.data),
+        sha256: downloadedSha256,
         specification: artifact.specification ?? null,
         absolutePath: join(root, path),
       });

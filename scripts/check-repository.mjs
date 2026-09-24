@@ -13,7 +13,7 @@ const tracked = execFileSync("git", ["ls-files", "--stage", "-z"], { encoding: "
     return { mode, oid, stage, file: entry.slice(tab + 1) };
   });
 
-const forbiddenDirectories = /(^|\/)(\.buyer|\.seller|\.gobtcpay|\.hypit|\.demo|\.shared-model|\.validation|\.tools|\.pnpm-store|\.deck-assets|\.deck-build|\.codex-finalizer|node_modules|output)(\/|$)/;
+const forbiddenDirectories = /(^|\/)(\.buyer|\.seller|\.gobtcpay|\.hypit|\.demo|\.shared-model|\.validation|\.tools|\.local-ops|\.pnpm-store|\.deck-assets|\.deck-build|\.codex-finalizer|node_modules|output)(\/|$)/;
 const forbiddenExtensions = /\.(pem|key|p12|pfx|jks|keystore)$/i;
 const forbiddenFiles = new Set(["model.integration.json", "productions/hypit.runtime.json", "application_default_credentials.json"]);
 const allowedEnvironmentExamples = new Set([".env.example", ".env.public-demo.example"]);

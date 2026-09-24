@@ -112,7 +112,7 @@ test("wallet authenticates, signs every matching PSBT input, and preserves recei
       });
     }
     if (url.endsWith("/instant/transaction/pay-and-sign-pre-authorized-transaction")) {
-      return success({ paymentTxId: "receipt-not-chain-txid" });
+      return success({ paymentId: "payment-1", paymentTxId: "receipt-not-chain-txid" });
     }
     throw new Error(`Unexpected URL ${url}`);
   };
@@ -138,6 +138,39 @@ test("wallet authenticates, signs every matching PSBT input, and preserves recei
   });
   assert.equal(calls.filter((call) => call.url.endsWith("/instant/auth/get-data-to-sign")).length, 1);
   assert.equal(calls.at(-1).options.headers.authorization, "Bearer jwt-1");
+  await assert.rejects(wallet.preparePayment({
+    paymentId: "payment-1", amountSats: 9_000, recipientAddress: recipientOutput.address,
+    maxFeeSats: 499,
+  }), (error) => error.code === "psbt_fee_exceeded");
+});
+
+test("wallet refuses a submission receipt for another payment or an unsafe receipt identifier", async () => {
+  const { keyFile, identity } = await identityFixture();
+  for (const submitted of [
+    { paymentId: "another-payment", paymentTxId: "receipt-1" },
+    { paymentTxId: "receipt-1" },
+    { paymentId: "payment-1", paymentTxId: "receipt-1\nspoofed" },
+  ]) {
+    const wallet = new InstantWalletClient({
+      baseUrl: "https://api.example.test",
+      keyFile,
+      expectedPublicKeyHex: identity.publicKeyHex,
+      fetchImpl: async (url) => {
+        if (url.endsWith("/instant/auth/get-data-to-sign")) {
+          return success({
+            challengeId: "challenge-1",
+            messageToSign: `instant-go login;pubkey=${identity.publicKeyHex};nonce=12345678;issuedAt=1800000000000;expiresAt=1800000600000`,
+          });
+        }
+        if (url.endsWith("/instant/auth/get-jwt")) return success({ jwt: "jwt-1" });
+        return success(submitted);
+      },
+      clock: () => 1_800_000_000_000,
+    });
+    await assert.rejects(wallet.submitPrepared({
+      paymentId: "payment-1", jobId: "job-1", signedPsbtBase64: "signed",
+    }), (error) => ["gobtcpay_receipt_mismatch", "gobtcpay_invalid_response"].includes(error.code));
+  }
 });
 
 test("wallet signs every input of a 2-of-3 P2WSH multisig PSBT", async () => {

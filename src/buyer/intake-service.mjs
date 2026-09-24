@@ -11,6 +11,28 @@ export const INTAKE_INITIAL_STATE = Object.freeze({
   audit: [],
 });
 
+const PUBLIC_DEMO_QUOTA_WINDOW_MS = 60 * 60 * 1000;
+
+export function publicDemoQuotaStatus(delegations, {
+  maxDelegations,
+  now = Date.now(),
+  windowMs = PUBLIC_DEMO_QUOTA_WINDOW_MS,
+} = {}) {
+  const cutoff = now - windowMs;
+  const counted = delegations
+    .map((item) => Date.parse(item?.createdAt))
+    .filter((createdAt) => Number.isFinite(createdAt) && createdAt >= cutoff)
+    .sort((left, right) => left - right);
+  const used = counted.length;
+  return {
+    used,
+    limit: maxDelegations,
+    available: Math.max(0, maxDelegations - used),
+    exhausted: used >= maxDelegations,
+    retryAt: used >= maxDelegations ? new Date(counted[0] + windowMs).toISOString() : null,
+  };
+}
+
 function nowIso(clock) {
   return new Date(clock()).toISOString();
 }
@@ -178,7 +200,7 @@ function makeMandate(extraction, version, context = {}) {
         ? extraction.brief.languages.map((item) => normalizeProductionLanguageTag(item) ?? item)
         : ["en-US"],
       aspectRatios: extraction.brief.aspectRatios.length > 0 ? extraction.brief.aspectRatios : ["9:16"],
-      hookVariants: extraction.brief.hookVariants ?? 1,
+      hookVariants: extraction.brief.hookVariants,
       visualMode: extraction.brief.visualMode ?? "package_default",
       voiceRequirements: extraction.brief.voiceRequirements ?? [],
     },
@@ -222,7 +244,11 @@ function validateCreate(input) {
 function delegationState(campaign, authorizationMode) {
   if (campaign.state === "completed") return "completed";
   if (campaign.state === "cancelled") return "cancelled";
+  if (["cancellation_pending", "refund_review_required", "cost_review_required"].includes(campaign.state)) {
+    return campaign.state;
+  }
   if (campaign.state === "decision_failed") return "campaign_failed";
+  if (campaign.state === "payment_origin_review_required") return "payment_origin_review_required";
   if (["spend_blocked", "order_failed", "payment_preparation_failed"].includes(campaign.state)) {
     return "execution_paused";
   }
@@ -232,6 +258,8 @@ function delegationState(campaign, authorizationMode) {
   }
   return "campaign_active";
 }
+
+const CANCELLATION_STATES = new Set(["cancelled", "cancellation_pending", "refund_review_required", "cost_review_required"]);
 
 export class IntakeService {
   constructor({
@@ -258,7 +286,7 @@ export class IntakeService {
     return { ready: model.configured === true, model };
   }
 
-  async createDelegation({ input: rawInput, idempotencyKey }) {
+  async createDelegation({ input: rawInput, idempotencyKey, maxHourlyDelegations = null }) {
     if (typeof idempotencyKey !== "string" || idempotencyKey.trim().length < 8 || idempotencyKey.length > 200) {
       throw new AppError("invalid_idempotency_key", "Idempotency-Key must contain 8-200 characters");
     }
@@ -273,6 +301,20 @@ export class IntakeService {
           throw new AppError("idempotency_conflict", "Idempotency-Key is already bound to another delegation", 409);
         }
         return { delegation: existing, isNew: false };
+      }
+      if (maxHourlyDelegations !== null) {
+        const quota = publicDemoQuotaStatus(Object.values(state.delegations), {
+          maxDelegations: maxHourlyDelegations,
+          now: this.clock(),
+        });
+        if (quota.exhausted) {
+          throw new AppError(
+            "public_demo_quota_exhausted",
+            `The hourly Demo limit has been reached. A slot reopens after ${quota.retryAt}`,
+            429,
+            quota,
+          );
+        }
       }
       const id = `dlg_${randomUUID()}`;
       const delegation = {
@@ -289,6 +331,7 @@ export class IntakeService {
         mandate: null,
         questions: [],
         approval: null,
+        interpretationAttempts: [],
         campaignId: null,
         campaign: null,
         lastError: null,
@@ -335,13 +378,21 @@ export class IntakeService {
       throw new AppError("invalid_answers", "answers must be a JSON object keyed by question ID");
     }
     const allowed = new Set(delegation.questions.map((item) => item.id));
+    if (delegation.state === "interpretation_failed") allowed.add("clarification_note");
     const entries = Object.entries(input.answers);
     if (entries.length === 0) throw new AppError("invalid_answers", "At least one answer is required");
-    if (delegation.state !== "interpretation_failed" && entries.some(([id]) => !allowed.has(id))) {
+    if (entries.length > 20) {
+      throw new AppError("answers_too_large", "Answer no more than 20 questions at a time", 413);
+    }
+    if (entries.some(([id]) => !allowed.has(id))) {
       throw new AppError("unknown_question", "answers contains an unknown question ID");
     }
     if (entries.some(([, value]) => !["string", "number", "boolean"].includes(typeof value))) {
       throw new AppError("invalid_answers", "Answer values must be strings, numbers, or booleans");
+    }
+    if (entries.some(([, value]) => String(value).length > 1000)
+      || entries.reduce((sum, [, value]) => sum + String(value).length, 0) > 6000) {
+      throw new AppError("answers_too_large", "Each answer may contain up to 1,000 characters, with 6,000 total per submission", 413);
     }
     await this.store.transaction((state) => {
       const current = state.delegations[delegationId];
@@ -352,10 +403,16 @@ export class IntakeService {
         throw new AppError("clarification_not_expected", `Cannot answer questions from state: ${current.state}`, 409);
       }
       const currentAllowed = new Set(current.questions.map((item) => item.id));
-      if (current.state !== "interpretation_failed" && entries.some(([id]) => !currentAllowed.has(id))) {
+      if (current.state === "interpretation_failed") currentAllowed.add("clarification_note");
+      if (entries.some(([id]) => !currentAllowed.has(id))) {
         throw new AppError("unknown_question", "answers contains an unknown or stale question ID");
       }
-      current.answers = { ...current.answers, ...structuredClone(input.answers) };
+      const updatedAnswers = { ...current.answers, ...structuredClone(input.answers) };
+      if (Object.keys(updatedAnswers).length > 30
+        || Object.values(updatedAnswers).reduce((sum, value) => sum + String(value).length, 0) > 12_000) {
+        throw new AppError("answers_too_large", "This brief has reached its clarification text limit", 413);
+      }
+      current.answers = updatedAnswers;
       current.clarification ??= { rounds: 0, dynamicQuestionsAsked: 0 };
       current.clarification.rounds += 1;
       current.state = "interpreting";
@@ -435,15 +492,19 @@ export class IntakeService {
     return await this.#ensureCampaign(delegation.id);
   }
 
-  async confirmPurchase(delegationId) {
+  async confirmPurchase(delegationId, selectionDigest) {
     const delegation = this.getDelegation(delegationId);
     if (delegation.state !== "awaiting_purchase_confirmation") {
       throw new AppError("purchase_confirmation_not_expected", `Cannot confirm purchase from state: ${delegation.state}`, 409);
+    }
+    if (typeof selectionDigest !== "string" || !/^[a-f0-9]{64}$/u.test(selectionDigest)) {
+      throw new AppError("invalid_purchase_confirmation", "A valid displayed purchase selection is required", 400);
     }
     const campaign = await this.buyer.executeCampaign(delegation.campaignId, {
       purchaseAuthorization: {
         type: "delegation_purchase_confirmation",
         delegationId,
+        selectionDigest,
       },
     });
     return await this.#recordCampaign(delegationId, campaign, "purchase.confirmed");
@@ -451,8 +512,14 @@ export class IntakeService {
 
   async syncDelegation(delegationId) {
     const delegation = this.getDelegation(delegationId);
-    if (delegation.campaignId === null) return delegation;
-    const campaign = await this.buyer.syncCampaign(delegation.campaignId);
+    if (delegation.campaignId === null) {
+      if (delegation.state === "cancellation_pending" && delegation.approval?.approved === true
+        && !this.tasks.has(`campaign:${delegationId}`)) return await this.#ensureCampaign(delegationId);
+      return delegation;
+    }
+    const campaign = delegation.cancellationRequestedAt
+      ? await this.buyer.cancelCampaign(delegation.campaignId)
+      : await this.buyer.syncCampaign(delegation.campaignId);
     return await this.#recordCampaign(delegationId, campaign, "campaign.synced");
   }
 
@@ -474,19 +541,33 @@ export class IntakeService {
   }
 
   async cancelDelegation(delegationId) {
-    const delegation = this.getDelegation(delegationId);
-    if (["completed", "cancelled", "declined"].includes(delegation.state)) return delegation;
-    let campaign = null;
-    if (delegation.campaignId !== null) campaign = await this.buyer.cancelCampaign(delegation.campaignId);
-    return await this.store.transaction((state) => {
+    const pending = await this.store.transaction((state) => {
       const current = state.delegations[delegationId];
-      current.state = "cancelled";
-      current.cancelledAt = nowIso(this.clock);
-      current.campaign = campaign;
+      if (current === undefined) throw new AppError("delegation_not_found", "Delegation not found", 404);
+      if (["completed", "cancelled", "declined"].includes(current.state)) return current;
+      const firstRequest = current.cancellationRequestedAt == null;
+      current.cancellationRequestedAt ??= nowIso(this.clock);
+      const creationMayBeInFlight = ["creating_campaign", "campaign_creation_failed", "cancellation_pending"].includes(current.state);
+      current.state = current.campaignId !== null || creationMayBeInFlight ? "cancellation_pending" : "cancelled";
+      if (current.state === "cancelled") current.cancelledAt = nowIso(this.clock);
       current.updatedAt = nowIso(this.clock);
-      audit(state, this.clock, "delegation.cancelled", delegationId);
+      if (firstRequest) audit(state, this.clock, current.state === "cancelled" ? "delegation.cancelled" : "delegation.cancellation_requested", delegationId);
       return current;
     });
+    if (pending.campaignId === null || pending.state === "cancelled") return pending;
+    try {
+      const campaign = await this.buyer.cancelCampaign(pending.campaignId);
+      return await this.#recordCampaign(delegationId, campaign, "delegation.cancellation_reconciled");
+    } catch (error) {
+      return await this.store.transaction((state) => {
+        const current = state.delegations[delegationId];
+        current.state = "cancellation_pending";
+        current.lastError = errorView(error, this.clock);
+        current.updatedAt = nowIso(this.clock);
+        audit(state, this.clock, "delegation.cancellation_reconcile_failed", delegationId, { code: current.lastError.code });
+        return current;
+      });
+    }
   }
 
   async retryFulfillment(delegationId) {
@@ -504,20 +585,88 @@ export class IntakeService {
     return await this.store.transaction((state) => {
       const current = state.delegations[delegationId];
       if (current === undefined) throw new AppError("delegation_not_found", "Delegation not found", 404);
-      current.resolution = {
-        state: "human_review_required",
-        reason,
-        requestedAt: nowIso(this.clock),
+      if (current.resolution?.state === "human_review_required") return current;
+      const completedAt = current.campaign?.completedAt;
+      const isDeliveryDispute = current.campaign?.state === "completed";
+      if (!isDeliveryDispute && !["fulfillment_failed", "refund_review_required", "cost_review_required", "payment_uncertain"].includes(current.campaign?.state)) {
+        throw new AppError("resolution_not_expected", "This order has no paid fulfillment or delivery issue to review", 409);
+      }
+      const deadlineAt = completedAt ? new Date(Date.parse(completedAt) + 72 * 60 * 60 * 1000).toISOString() : null;
+      if (isDeliveryDispute && (!completedAt || this.clock() > Date.parse(deadlineAt))) {
+        throw new AppError("dispute_window_closed", "The 72-hour delivery review window has ended", 409);
+      }
+      const files = current.campaign.package?.files ?? [];
+      const evidence = input?.evidence;
+      const expected = typeof evidence?.expected === "string" ? evidence.expected.trim() : "";
+      const observed = typeof evidence?.observed === "string" ? evidence.observed.trim() : "";
+      const artifactPath = typeof evidence?.artifactPath === "string" ? evidence.artifactPath : "";
+      const artifact = files.find((file) => file.path === artifactPath && artifactPath.startsWith("creatives/"));
+      if (isDeliveryDispute && (expected.length < 5 || expected.length > 500
+        || observed.length < 5 || observed.length > 500 || artifact === undefined)) {
+        throw new AppError("dispute_evidence_required", "Describe expected and observed results and select a delivered creative", 400);
+      }
+      const timecodeSeconds = evidence?.timecodeSeconds;
+      if (isDeliveryDispute && timecodeSeconds !== undefined) {
+        const durationSeconds = artifact?.validation?.durationSeconds;
+        if (!Number.isFinite(timecodeSeconds) || timecodeSeconds < 0
+          || !Number.isFinite(durationSeconds) || durationSeconds <= 0
+          || timecodeSeconds > Math.min(durationSeconds + 0.25, 3600)) {
+          throw new AppError("invalid_dispute_timecode", "timecodeSeconds must be within the verified delivered video duration", 400);
+        }
+      }
+      const manifestSha256 = files.find((file) => file.path === "manifest.json")?.sha256
+        ?? current.campaign.package?.manifestSha256 ?? null;
+      const deliveryManifest = current.campaign.package == null ? null : {
+        version: 1,
+        campaignId: current.campaign.id ?? current.campaignId,
+        generatedAt: current.campaign.package.generatedAt ?? null,
+        ...(current.campaign.package.settlementUpdatedAt
+          ? { settlementUpdatedAt: current.campaign.package.settlementUpdatedAt } : {}),
+        files: structuredClone(files.filter((file) => file.path !== "manifest.json")),
       };
+      const reconstructedManifestSha256 = deliveryManifest === null ? null
+        : createHash("sha256").update(`${JSON.stringify(deliveryManifest, null, 2)}\n`).digest("hex");
+      const servicePriceSats = current.campaign?.sellerOrder?.amountSats;
+      const maxQualityRefundSats = isDeliveryDispute && Number.isSafeInteger(servicePriceSats) && servicePriceSats > 0
+        ? Math.floor(servicePriceSats / 5) : null;
+      const claim = {
+        type: isDeliveryDispute ? "delivery_quality" : "fulfillment_or_payment",
+        reason,
+        evidence: isDeliveryDispute ? {
+          expected, observed, artifactPath,
+          timecodeSeconds: timecodeSeconds ?? null,
+          artifactSha256: artifact.sha256 ?? null,
+          packageManifestSha256: manifestSha256,
+        } : null,
+        deliverySnapshot: current.campaign.package == null ? null : {
+          generatedAt: current.campaign.package.generatedAt ?? null,
+          manifestSha256,
+          reconstructedManifestSha256,
+          manifestMatches: reconstructedManifestSha256 === manifestSha256,
+          manifest: deliveryManifest,
+          files: files.map((file) => ({
+            path: file.path, sha256: file.sha256 ?? null,
+            bytes: file.bytes ?? null, mediaType: file.mediaType ?? null,
+          })),
+        },
+        requestedAt: nowIso(this.clock),
+        deadlineAt,
+        state: "human_review_required",
+        freeReworksAvailable: 0,
+        maxQualityRefundSats,
+        refund: { state: "not_issued", amountSats: null },
+      };
+      current.resolution = claim;
       current.updatedAt = nowIso(this.clock);
-      audit(state, this.clock, "resolution.requested", delegationId, { reason });
+      audit(state, this.clock, "resolution.requested", delegationId, { type: claim.type, artifactPath: claim.evidence?.artifactPath ?? null });
       return current;
     });
   }
 
   async recover() {
     const recoverable = Object.values(this.store.snapshot().delegations)
-      .filter((item) => ["interpreting", "creating_campaign"].includes(item.state));
+      .filter((item) => ["interpreting", "creating_campaign"].includes(item.state)
+        || (item.state === "cancellation_pending" && item.campaignId === null && item.approval?.approved === true));
     return await Promise.allSettled(recoverable.map((item) => (
       item.state === "interpreting" ? this.#interpret(item.id) : this.#ensureCampaign(item.id)
     )));
@@ -527,7 +676,45 @@ export class IntakeService {
     const taskKey = `interpret:${delegationId}`;
     if (this.tasks.has(taskKey)) return await this.tasks.get(taskKey);
     const task = (async () => {
-      const delegation = this.getDelegation(delegationId);
+      // Reserve the attempt durably before contacting the paid provider. A crash
+      // between reservation and response still consumes a slot rather than
+      // permitting an unbounded replay of an uncertain call.
+      const reservation = await this.store.transaction((state) => {
+        const current = state.delegations[delegationId];
+        if (current === undefined) throw new AppError("delegation_not_found", "Delegation not found", 404);
+        if (current.cancellationRequestedAt || current.state !== "interpreting") {
+          return { skip: true, delegation: current };
+        }
+        const now = this.clock();
+        const recent = (Array.isArray(current.interpretationAttempts) ? current.interpretationAttempts : [])
+          .filter((at) => Number.isFinite(Date.parse(at)) && Date.parse(at) > now - 60 * 60 * 1000)
+          .sort((left, right) => Date.parse(left) - Date.parse(right));
+        current.interpretationAttempts = recent;
+        if (recent.length >= 10) {
+          const retryAt = new Date(Date.parse(recent[0]) + 60 * 60 * 1000).toISOString();
+          current.state = "interpretation_failed";
+          current.lastError = {
+            code: "model_attempt_limit",
+            message: "This brief has reached its hourly interpretation limit; retry after the displayed time",
+            at: nowIso(this.clock), retryAt,
+          };
+          current.updatedAt = nowIso(this.clock);
+          audit(state, this.clock, "mandate.interpretation_limited", delegationId, { retryAt });
+          return { limited: true, retryAt };
+        }
+        current.interpretationAttempts.push(new Date(now).toISOString());
+        audit(state, this.clock, "mandate.interpretation_attempt_reserved", delegationId, {
+          attemptsInHour: current.interpretationAttempts.length,
+        });
+        return { delegation: current };
+      });
+      if (reservation.limited) {
+        throw new AppError("model_attempt_limit", "This brief has reached its hourly interpretation limit", 429, {
+          retryAt: reservation.retryAt,
+        });
+      }
+      if (reservation.skip) return reservation.delegation;
+      const delegation = reservation.delegation;
       try {
         const modelContext = { ...delegation.input.context };
         if (modelContext.referenceUploadId !== undefined) {
@@ -581,6 +768,7 @@ export class IntakeService {
         const mandate = makeMandate(extraction, version, delegation.input.context);
         return await this.store.transaction((state) => {
           const current = state.delegations[delegationId];
+          if (current.cancellationRequestedAt) return current;
           current.revision = version;
           current.extraction = extraction;
           current.mandate = mandate;
@@ -603,6 +791,7 @@ export class IntakeService {
       } catch (error) {
         return await this.store.transaction((state) => {
           const current = state.delegations[delegationId];
+          if (current.cancellationRequestedAt) return current;
           current.state = "interpretation_failed";
           current.lastError = errorView(error, this.clock);
           current.updatedAt = nowIso(this.clock);
@@ -620,7 +809,13 @@ export class IntakeService {
     if (this.tasks.has(taskKey)) return await this.tasks.get(taskKey);
     const task = (async () => {
       const delegation = this.getDelegation(delegationId);
-      if (delegation.campaignId !== null) return await this.syncDelegation(delegationId);
+      if (delegation.state === "cancelled") return delegation;
+      if (delegation.campaignId !== null) {
+        const campaign = delegation.cancellationRequestedAt
+          ? await this.buyer.cancelCampaign(delegation.campaignId)
+          : await this.buyer.resumeCampaign(delegation.campaignId);
+        return await this.#recordCampaign(delegationId, campaign, "campaign.recovered");
+      }
       const mandate = delegation.mandate;
       if (mandate.referenceUploadId !== null && this.referenceUploadBaseUrl === null) {
         throw new AppError("reference_upload_unavailable", "Uploaded product images are not configured for this Buyer", 503);
@@ -647,6 +842,10 @@ export class IntakeService {
         autoExecute,
         authorizationMode: mandate.authorizationMode,
         delegationId,
+        decisionContext: {
+          customerRequest: delegation.input.request,
+          assumptions: mandate.assumptions,
+        },
         brief: {
           productName: mandate.brief.productName ?? mandate.subject,
           description: mandate.brief.description ?? mandate.subject,
@@ -659,7 +858,9 @@ export class IntakeService {
           voiceRequirements: mandate.brief.voiceRequirements,
         },
         addOns: {
-          hookVariants: mandate.brief.hookVariants,
+          ...(mandate.scopeFlexibility.hookVariants
+            ? {}
+            : { hookVariants: mandate.brief.hookVariants }),
           languages: mandate.brief.languages,
           aspectRatios: mandate.brief.aspectRatios,
         },
@@ -668,24 +869,30 @@ export class IntakeService {
         const campaign = await this.buyer.createCampaign({
           input: campaignInput,
           idempotencyKey: `delegation-${delegationId}-v${mandate.version}`,
+          onCreated: async (createdCampaign) => {
+            const linked = await this.store.transaction((state) => {
+              const current = state.delegations[delegationId];
+              if (current.campaignId !== null && current.campaignId !== createdCampaign.id) {
+                throw new AppError("campaign_link_conflict", "Delegation is already linked to another campaign", 409);
+              }
+              current.campaignId = createdCampaign.id;
+              current.campaign = createdCampaign;
+              if (current.cancellationRequestedAt) current.state = "cancellation_pending";
+              current.updatedAt = nowIso(this.clock);
+              return current;
+            });
+            if (linked.cancellationRequestedAt) await this.buyer.cancelCampaign(createdCampaign.id);
+          },
         });
-        return await this.store.transaction((state) => {
-          const current = state.delegations[delegationId];
-          current.campaignId = campaign.id;
-          current.campaign = campaign;
-          current.state = delegationState(campaign, mandate.authorizationMode);
-          current.lastError = null;
-          current.updatedAt = nowIso(this.clock);
-          audit(state, this.clock, "campaign.created", delegationId, {
-            campaignId: campaign.id,
-            campaignState: campaign.state,
-          });
-          return current;
-        });
+        const current = this.getDelegation(delegationId);
+        const reconciled = current.cancellationRequestedAt
+          ? await this.buyer.cancelCampaign(campaign.id)
+          : campaign;
+        return await this.#recordCampaign(delegationId, reconciled, "campaign.created");
       } catch (error) {
         return await this.store.transaction((state) => {
           const current = state.delegations[delegationId];
-          current.state = "campaign_creation_failed";
+          current.state = current.cancellationRequestedAt ? "cancellation_pending" : "campaign_creation_failed";
           current.lastError = errorView(error, this.clock);
           current.updatedAt = nowIso(this.clock);
           audit(state, this.clock, "campaign.creation_failed", delegationId, { code: current.lastError.code });
@@ -700,8 +907,16 @@ export class IntakeService {
   async #recordCampaign(delegationId, campaign, eventType) {
     return await this.store.transaction((state) => {
       const current = state.delegations[delegationId];
+      if (current.campaignId !== null && current.campaignId !== campaign.id) {
+        throw new AppError("campaign_link_conflict", "Delegation is linked to another campaign", 409);
+      }
+      current.campaignId ??= campaign.id;
       current.campaign = campaign;
-      current.state = delegationState(campaign, current.mandate.authorizationMode);
+      current.state = current.cancellationRequestedAt && !CANCELLATION_STATES.has(campaign.state)
+        ? "cancellation_pending"
+        : delegationState(campaign, current.mandate.authorizationMode);
+      if (current.state === "cancelled") current.cancelledAt ??= nowIso(this.clock);
+      current.lastError = null;
       current.updatedAt = nowIso(this.clock);
       audit(state, this.clock, eventType, delegationId, {
         campaignId: campaign.id,

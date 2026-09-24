@@ -1,10 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { extname, resolve, sep } from "node:path";
 
 import { AppError, errorPayload } from "../errors.mjs";
-import { resolveRegularFile, streamRegularFile } from "../safe-file.mjs";
+import { publicDemoQuotaStatus } from "./intake-service.mjs";
+import { resolveRegularFile, streamRegularFile, verifyRegularFileDigest } from "../safe-file.mjs";
 import {
   assertAllowedHost,
   assertSameOrigin,
@@ -28,27 +29,35 @@ const MIME = {
 };
 
 const PUBLIC_DEMO_QUOTA_WINDOW_MS = 60 * 60 * 1000;
-const PUBLIC_DEMO_QUOTA_EXCLUDED_STATES = new Set(["declined", "cancelled"]);
+const PUBLIC_DEMO_IMAGE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const PUBLIC_DEMO_IMAGE_STORAGE_BYTES = 10 * 1024 * 1024 * 1024;
+const UPLOAD_ID = /^[a-f0-9]{48}\.(?:jpg|png)$/u;
+export { publicDemoQuotaStatus };
 
-export function publicDemoQuotaStatus(delegations, {
-  maxDelegations,
+export async function pruneExpiredProductUploads(uploadDir, {
+  protectedIds = new Set(),
   now = Date.now(),
-  windowMs = PUBLIC_DEMO_QUOTA_WINDOW_MS,
 } = {}) {
-  const cutoff = now - windowMs;
-  const counted = delegations
-    .filter((item) => !PUBLIC_DEMO_QUOTA_EXCLUDED_STATES.has(item?.state))
-    .map((item) => Date.parse(item?.createdAt))
-    .filter((createdAt) => Number.isFinite(createdAt) && createdAt >= cutoff)
-    .sort((left, right) => left - right);
-  const used = counted.length;
-  return {
-    used,
-    limit: maxDelegations,
-    available: Math.max(0, maxDelegations - used),
-    exhausted: used >= maxDelegations,
-    retryAt: used >= maxDelegations ? new Date(counted[0] + windowMs).toISOString() : null,
-  };
+  let entries;
+  try { entries = await readdir(uploadDir, { withFileTypes: true }); } catch (error) {
+    if (error.code === "ENOENT") return 0;
+    throw error;
+  }
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !UPLOAD_ID.test(entry.name) || protectedIds.has(entry.name)) continue;
+    const path = resolve(uploadDir, entry.name);
+    let info;
+    try { info = await stat(path); } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    if (!info.isFile() || info.mtimeMs > now - PUBLIC_DEMO_IMAGE_RETENTION_MS) continue;
+    try { await unlink(path); removed += 1; } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  return removed;
 }
 
 function json(response, status, payload) {
@@ -213,7 +222,32 @@ export function createBuyerServer({
   const uploadDir = resolve(dataDir, "uploads");
   const maxProductImageBytes = 5 * 1024 * 1024;
   const maxUploads = publicDemo.enabled === true ? Math.max(2, (publicDemo.maxDelegations ?? 3) * 2) : 50;
-  let uploadsAcceptedAt = [];
+  const maxPublicUploadStorageBytes = PUBLIC_DEMO_IMAGE_STORAGE_BYTES;
+  let uploadQueue = Promise.resolve();
+
+  function protectedUploads() {
+    const snapshot = intake.store?.snapshot?.();
+    if (!snapshot) return null;
+    const ids = new Set();
+    for (const delegation of Object.values(snapshot.delegations ?? {})) {
+      if (["completed", "cancelled", "declined"].includes(delegation.state)
+        && delegation.resolution?.state !== "human_review_required") continue;
+      const id = delegation.input?.context?.referenceUploadId;
+      if (typeof id === "string" && UPLOAD_ID.test(id)) ids.add(id);
+    }
+    return ids;
+  }
+
+  function scheduleUploadCleanup() {
+    const operation = uploadQueue.then(async () => {
+      const ids = protectedUploads();
+      if (ids === null) return;
+      await pruneExpiredProductUploads(uploadDir, { protectedIds: ids });
+    });
+    uploadQueue = operation.catch((error) => {
+      console.error("Product-image retention cleanup failed", error.code ?? "unknown_error");
+    });
+  }
 
   function authorize(request, method, host) {
     const bearerAuthorized = secretEqual(bearerToken(request), apiToken);
@@ -232,7 +266,7 @@ export function createBuyerServer({
     }
   }
 
-  return createServer(async (request, response) => {
+  const server = createServer(async (request, response) => {
     response.setHeader("x-content-type-options", "nosniff");
     response.setHeader("referrer-policy", "no-referrer");
     response.setHeader("x-frame-options", "DENY");
@@ -274,6 +308,8 @@ export function createBuyerServer({
       }
       const uploadFileMatch = url.pathname.match(/^\/v1\/uploads\/([a-f0-9]{48}\.(?:jpg|png))$/u);
       if (method === "GET" && uploadFileMatch) {
+        limitApi(request);
+        authorize(request, method, host);
         const selected = await resolveRegularFile(uploadDir, uploadFileMatch[1], "upload_not_found");
         response.writeHead(200, {
           "content-type": MIME[extname(selected.path).toLowerCase()],
@@ -334,7 +370,7 @@ export function createBuyerServer({
             externalUrlsDisabled: true,
             maxDelegations: publicDemo.maxDelegations,
             quotaWindowMinutes: 60,
-            quotaExcludedStates: [...PUBLIC_DEMO_QUOTA_EXCLUDED_STATES],
+            quotaExcludedStates: [],
             maxRequestChars: publicDemo.maxRequestChars,
           } : { mode: "local_operator" },
         };
@@ -342,18 +378,33 @@ export function createBuyerServer({
         return;
       }
       if (method === "POST" && url.pathname === "/v1/uploads/product-image") {
-        const uploadCutoff = Date.now() - PUBLIC_DEMO_QUOTA_WINDOW_MS;
-        uploadsAcceptedAt = uploadsAcceptedAt.filter((acceptedAt) => acceptedAt >= uploadCutoff);
-        if (uploadsAcceptedAt.length >= maxUploads) {
-          throw new AppError("product_image_upload_limit", "The hourly product-image upload limit has been reached", 429);
-        }
         const declaredType = String(request.headers["content-type"] ?? "").split(";", 1)[0].toLowerCase();
         const data = await binaryBody(request, maxProductImageBytes);
         const image = inspectProductImage(data, declaredType);
-        const id = `${randomBytes(24).toString("hex")}.${image.extension}`;
-        await mkdir(uploadDir, { recursive: true, mode: 0o700 });
-        await writeFile(resolve(uploadDir, id), data, { mode: 0o600, flag: "wx" });
-        uploadsAcceptedAt.push(Date.now());
+        const operation = uploadQueue.then(async () => {
+          await mkdir(uploadDir, { recursive: true, mode: 0o700 });
+          const entries = await readdir(uploadDir, { withFileTypes: true });
+          let recentUploads = 0;
+          let storedBytes = 0;
+          const cutoff = Date.now() - PUBLIC_DEMO_QUOTA_WINDOW_MS;
+          for (const entry of entries) {
+            if (!entry.isFile() || !UPLOAD_ID.test(entry.name)) continue;
+            const info = await stat(resolve(uploadDir, entry.name));
+            storedBytes += info.size;
+            if (info.mtimeMs >= cutoff) recentUploads += 1;
+          }
+          if (recentUploads >= maxUploads) {
+            throw new AppError("product_image_upload_limit", "The hourly product-image upload limit has been reached", 429);
+          }
+          if (publicDemo.enabled === true && storedBytes + data.length > maxPublicUploadStorageBytes) {
+            throw new AppError("product_image_storage_limit", "Product-image storage is full; contact the operator", 507);
+          }
+          const id = `${randomBytes(24).toString("hex")}.${image.extension}`;
+          await writeFile(resolve(uploadDir, id), data, { mode: 0o600, flag: "wx" });
+          return id;
+        });
+        uploadQueue = operation.then(() => undefined, () => undefined);
+        const id = await operation;
         json(response, 201, { id, mediaType: image.mediaType, bytes: data.length, width: image.width, height: image.height });
         return;
       }
@@ -361,17 +412,6 @@ export function createBuyerServer({
         const input = await body(request);
         if (publicDemo.enabled === true) {
           validatePublicDemoDelegation(input, { maxRequestChars: publicDemo.maxRequestChars });
-          const quota = publicDemoQuotaStatus(intake.listDelegations(100), {
-            maxDelegations: publicDemo.maxDelegations,
-          });
-          if (quota.exhausted) {
-            throw new AppError(
-              "public_demo_quota_exhausted",
-              `The hourly Demo limit has been reached. A slot reopens after ${quota.retryAt}`,
-              429,
-              quota,
-            );
-          }
         }
         if (typeof input.context?.referenceUploadId === "string") {
           const selected = await resolveRegularFile(uploadDir, input.context.referenceUploadId, "upload_not_found");
@@ -380,6 +420,7 @@ export function createBuyerServer({
         json(response, 201, await intake.createDelegation({
           input,
           idempotencyKey: request.headers["idempotency-key"],
+          maxHourlyDelegations: publicDemo.enabled === true ? publicDemo.maxDelegations : null,
         }));
         return;
       }
@@ -418,7 +459,11 @@ export function createBuyerServer({
       }
       const confirmPurchaseMatch = url.pathname.match(/^\/v1\/delegations\/([^/]+)\/confirm-purchase$/u);
       if (method === "POST" && confirmPurchaseMatch) {
-        json(response, 200, await intake.confirmPurchase(decodeURIComponent(confirmPurchaseMatch[1])));
+        const input = await body(request);
+        json(response, 200, await intake.confirmPurchase(
+          decodeURIComponent(confirmPurchaseMatch[1]),
+          input.selectionDigest,
+        ));
         return;
       }
       const syncDelegationMatch = url.pathname.match(/^\/v1\/delegations\/([^/]+)\/sync$/u);
@@ -479,10 +524,11 @@ export function createBuyerServer({
         const campaignId = decodeURIComponent(packageFileMatch[1]);
         const relative = packageFileMatch[2].split("/").map(decodeURIComponent).join("/");
         const campaign = service.getCampaign(campaignId);
-        const allowed = campaign.package?.files?.some((item) => item.path === relative);
-        if (!allowed) throw new AppError("package_file_not_found", "Campaign package file not found", 404);
+        const fileRecord = campaign.package?.files?.find((item) => item.path === relative);
+        if (!fileRecord) throw new AppError("package_file_not_found", "Campaign package file not found", 404);
         const base = resolve(dataDir, "campaign-packages", campaignId.replace(/[^a-zA-Z0-9._-]/gu, "-"));
         const selected = await resolveRegularFile(base, relative, "package_file_not_found");
+        await verifyRegularFileDigest(selected, fileRecord.sha256, fileRecord.bytes, "package_file_integrity_failed");
         response.writeHead(200, {
           "content-type": MIME[extname(selected.path).toLowerCase()] ?? "application/octet-stream",
           "content-length": selected.size,
@@ -524,4 +570,11 @@ export function createBuyerServer({
       json(response, payload.status, payload.body);
     }
   });
+  if (publicDemo.enabled === true) {
+    server.once("listening", scheduleUploadCleanup);
+    const cleanupTimer = setInterval(scheduleUploadCleanup, 60 * 60 * 1000);
+    cleanupTimer.unref();
+    server.once("close", () => clearInterval(cleanupTimer));
+  }
+  return server;
 }

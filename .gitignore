@@ -30,10 +30,14 @@ vendor/hypit/node_modules/
 productions/.hypit/
 .validation/
 .tools/
+.local-ops/
 .codex-finalizer/
 .deck-build/
+.deck-build-v3/
+.deck-inspect-current/
 .deck-assets/
 output/
+output-v3/
 coverage/
 *.log
 *.pid

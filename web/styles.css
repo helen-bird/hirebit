@@ -510,6 +510,15 @@ body { min-height: 0; }
 @keyframes agentPulse { 50% { transform: translateY(-3px); box-shadow: 0 0 54px rgba(247,147,26,.3); } }
 @keyframes arrowPulse { 50% { color: var(--orange); transform: translateX(2px); } }
 .action-bar { flex: 0 0 auto; padding: 10px 16px; }
+
+.review-dialog { width: min(92vw, 580px); max-height: 88vh; overflow: auto; border: 1px solid var(--line); border-radius: 18px; padding: 24px; background: #171d1e; color: #f2f3ed; box-shadow: 0 24px 80px #0009; }
+.review-dialog::backdrop { background: #081011b8; }
+.review-dialog form { display: grid; gap: 14px; }
+.review-dialog h2, .review-dialog p { margin: 0; }
+.review-dialog label { display: grid; gap: 6px; font-size: 14px; }
+.review-dialog textarea, .review-dialog input { width: 100%; min-height: 42px; padding: 10px 12px; border: 1px solid #586463; border-radius: 9px; background: #0e1516; color: #f2f3ed; font: inherit; }
+.review-dialog textarea { min-height: 86px; resize: vertical; }
+.review-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; }
 .section-title { margin-bottom: 13px; }
 .section-title h2 { font-size: 22px; }
 .data-grid { gap: 7px; margin-bottom: 12px; }

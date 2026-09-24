@@ -73,6 +73,7 @@ test("CampaignCompletionService creates a verifiable outcome package", async () 
   assert.equal(result.state, "completed");
   assert.equal(result.summary.spend.spentSats, 1300);
   assert.equal(result.paymentProof.instantReceiptId, "instant-receipt-1");
+  assert.equal("paymentId" in result.paymentProof, false);
   assert.deepEqual(result.paymentProof.txids, ["deadbeef"]);
   assert.match(result.paymentProof.note, /only txids are on-chain/u);
   assert.equal(result.testingPlan.variants[0].strategy, "Pain → proof → CTA");
@@ -87,6 +88,7 @@ test("CampaignCompletionService creates a verifiable outcome package", async () 
   assert.equal(creativeEntry.url, "/v1/campaigns/cmp_package_test/package/files/creatives/final.mp4");
   assert.equal((await stat(join(root, "summary.json"))).mode & 0o777, 0o600);
   const report = await readFile(join(root, "campaign-report.md"), "utf8");
+  assert.equal(report.includes("pay_1"), false);
   assert.match(report, /Instant receipt: instant-receipt-1/u);
   assert.match(report, /On-chain txids: deadbeef/u);
 
@@ -96,6 +98,7 @@ test("CampaignCompletionService creates a verifiable outcome package", async () 
   assert.deepEqual(refreshed.paymentProof.txids, ["settled-chain-txid"]);
   const refreshedProof = JSON.parse(await readFile(join(root, "payment-proof.json"), "utf8"));
   assert.deepEqual(refreshedProof.txids, ["settled-chain-txid"]);
+  assert.equal("paymentId" in refreshedProof, false);
   const refreshedReport = await readFile(join(root, "campaign-report.md"), "utf8");
   assert.match(refreshedReport, /settled-chain-txid/u);
 });
@@ -106,6 +109,19 @@ test("CampaignCompletionService refuses incomplete fulfillment", async () => {
   const incomplete = campaign();
   incomplete.sellerOrder.state = "awaiting_payment";
   await assert.rejects(service.complete(incomplete), (error) => error.code === "fulfillment_not_complete");
+});
+
+test("CampaignCompletionService rejects bytes that differ from Seller's completed artifact record", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "campaign-package-integrity-test-"));
+  const completed = campaign();
+  completed.sellerOrder.production.result.artifacts[0].bytes = video.length;
+  completed.sellerOrder.production.result.artifacts[0].sha256 = "a".repeat(64);
+  const service = new CampaignCompletionService({
+    seller: { async downloadArtifact() { return { data: video, mediaType: "video/mp4" }; } },
+    dataDir,
+    mediaValidator: async () => ({ validatedVideos: 1 }),
+  });
+  await assert.rejects(service.complete(completed), (error) => error.code === "seller_artifact_integrity_failed");
 });
 
 test("CampaignCompletionService rejects a non-video artifact advertised as MP4", async () => {

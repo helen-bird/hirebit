@@ -25,7 +25,7 @@ Set `paymentsEnabled` to `false` in `config/buyer-policy.json`. The Buyer reload
 - A `submitting_payment` restart becomes `payment_uncertain` and only status reconciliation is allowed.
 - A producing order with a durable Hypit Build ID reattaches to that Build. A legacy interrupted order without an ID fails closed and requires explicit production retry.
 - Buyer and Seller process locks prevent two local instances from executing the same state files.
-- Paid production failure can be retried explicitly. Cancellation is accepted only before payment might have been submitted; later cases enter human resolution rather than claiming an automatic refund.
+- Buyer cancellation is durable and blocks subsequent Buyer payment submission if it wins the submission gate. Seller separately gates production start. A request during an already-submitting payment remains pending; it does not imply the BTC transfer was prevented. Before production, a later `paid` becomes a refund-review obligation, not a falsely reported refund. After production begins, costs require evidence and human review. The outgoing refund rail is not implemented.
 - A terminal worker cleanup removes only the deterministic container and volume for that exact order. It never stops Docker globally or removes unrelated containers/volumes.
 
 ## Deployment limits

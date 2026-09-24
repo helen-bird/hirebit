@@ -2,6 +2,8 @@
 
 > Hackathon Demo — a working prototype of pay-per-job procurement for short-form video campaigns.
 
+Live demo: [sats-story-hirebit.pages.dev/console](https://sats-story-hirebit.pages.dev/console/)
+
 Small businesses already use AI for marketing and need short-form video, but an occasional campaign
 job does not map neatly to another tool subscription, credit system and production workflow. Hirebit
 lets a merchant specify the outcome, assets, deadline and budget. An AI Buyer decides what production
@@ -25,7 +27,7 @@ effects remain bounded by explicit policy and durable evidence.
 
 The customer journey is intentionally short:
 
-1. Choose **Autonomous** or **Confirm before purchase**.
+1. Choose **Autonomous** or **Confirm purchase**.
 2. Describe the campaign and add product media.
 3. Answer only the questions needed to make the request executable.
 4. Review the normalized mandate and the Agent's package × scope comparison.
@@ -36,10 +38,10 @@ Hirebit currently offers four Hypit-backed production packages:
 
 | Package | Best for | Production shape |
 | --- | --- | --- |
-| Creator Pitch | Fast product storytelling | Presenter-led or presenter-free vertical pitch |
-| Product Showcase | Product demonstration and reference-led adaptation | Product-first action, narration, captions, and structured pacing |
-| Ranking / Listicle | Comparison and discovery content | Ranked hooks with repeatable visual beats |
-| Two-person Podcast | Conversational explanation | Two distinct voices in a dialogue format |
+| Creator Pitch | Launches and direct-response ads | One creator delivers a direct pitch to camera |
+| Product Showcase | Product demonstrations and conversion | The product performs reference-guided actions with narration and captions |
+| Ranking / Listicle | Comparisons and consideration | One presenter ranks and explains three reasons |
+| Two-person Podcast | Objections, trust and social proof | Two hosts answer objections in conversation |
 
 Purchased variants are compiled as a bounded Hook × language × aspect-ratio matrix. Supported
 ratios are 9:16, 1:1 and 16:9, with a hard ceiling of 30 output videos per order.
@@ -94,6 +96,72 @@ This demonstrates the implemented Buyer–Seller purchasing and fulfillment work
 payment boundary. It does **not** claim successful GoBTC wallet registration, merchant onboarding,
 mainnet submission, settlement or on-chain proof.
 
+### Payment authorization is separate from settlement
+
+The real instant-payment path spends from the Buyer's GoBTC 2-of-3 multisig wallet toward the
+Seller's payment address. Hirebit does not create or control an intermediate escrow wallet. The
+Buyer first checks the selected order, recipient, amount, fee and policy limits against the PSBT,
+then signs locally. GoBTC accepts the submitted signature before later broadcasting and settling
+the payment on-chain. This is the protocol's instant authorization, not an escrow release after
+customer acceptance.
+
+| Signal | Hirebit action | What it does **not** prove |
+| --- | --- | --- |
+| Payment `initiated` | Reserve the all-in customer price, including Seller-funded network-fee allowance; keep production locked | No payment has been accepted |
+| Payment `paid` | Commit the spend once and unlock this low-value production job | Seller has received settled BTC or an on-chain transaction exists |
+| `paidAt` plus transaction IDs | Record GoBTC-reported settlement evidence; do not run production again | Independent chain confirmation or resolution of service disputes |
+
+If a submission times out, Hirebit reconciles the existing payment instead of blindly signing
+or submitting another one. The order's stable `externalId` and local reservation protect retries;
+an expired or rejected unpaid payment releases the reservation only when GoBTC reports that
+terminal status. A local invoice deadline alone cannot prove that money was not submitted.
+A paid order whose production fails receives a bounded Seller-side retry where the provider
+operation is safe to repeat; an ambiguous Hypit Build without an ID or exhausted retries remain
+Seller-side obligations, never a second Buyer charge or an automatic Bitcoin reversal. Buyer
+cancellation now blocks later submission when it wins the final submit gate, and a Seller stop
+request blocks production when it wins the production-start race. An unpaid invoice remains under
+reconciliation until GoBTC confirms a terminal status. If `paid` arrives after the stop, Hirebit
+records the service price as **refund review required**, not as BTC already returned. A request
+after production starts enters itemized-cost review. Delivered work can be disputed within 72
+hours with file-specific evidence. Quality disputes do not include a free rework; an approved
+quality refund is capped at 20% of the service price. Adjudication and a separate outgoing BTC
+refund are not automated. A read-only local review command lists unresolved obligations without printing payment IDs, wallet
+addresses or customer briefs: `npm run transaction:review -- demo`. See
+[payment lifecycle and edge cases](docs/PAYMENT_LIFECYCLE.md).
+Seller reconciliation checks the returned payment ID, amount, recipient address and rail before accepting `paid`;
+the Buyer also checks that the Seller order still matches the quote and invoice it accepted.
+If an invoice is `paid` without a matching Buyer submission receipt, Hirebit pauses for payer-source
+review rather than charging the Buyer's budget or retrying payment. A timed-out submission may
+therefore require manual reconciliation even if the invoice later shows `paid`.
+Concurrent slower provider responses cannot overwrite a newer paid or settled state. Other
+conflicting or regressed provider responses stop for investigation instead of unlocking a new job
+or erasing a previously accepted authorization. Changed package, scope, service price or maximum
+authorized spend invalidates a purchase confirmation;
+the customer must approve the new offer. A cancelled order stops later paid production steps
+where possible, while already-submitted provider work remains subject to documented cost review.
+Completed campaigns respect the Seller's bounded next-check time while waiting for slow chain
+settlement, rather than hammering GoBTC every UI tick. Package downloads verify each file's
+recorded size and SHA-256 before serving it; a partially refreshed settlement report is withheld
+until its on-disk contents and the durable package record agree.
+New Seller exports record their own size and SHA-256, which the Seller and Buyer check before
+delivery. Shareable campaign reports omit the GoBTC payment ID because it is a read token for
+GoBTC's unauthenticated payment lookup; the protected transaction state retains it for reconciliation.
+The Buyer's multisig is not a guarantee of absolute irreversibility by key structure alone: GoBTC
+documents a separate Buyer-plus-recovery-custodian path. Hirebit relies on the provider's `paid`
+commitment for its small-job fulfillment gate, and reports chain settlement separately.
+
+Demo mode follows the same *state boundary*: a synthetic `paid` has `paidAt: null` and no chain
+transactions. Its `simulatedAuthorizedAt` and `demo_receipt_` are simulation evidence only. Neither
+the demo nor local tests establish that a real GoBTC payment will settle successfully.
+
+This prototype assumes one instant-payment rail per invoice. The provider payment status alone
+does not independently prove who funded an invoice; an unexpected outside-wallet payment to the
+same address, a disputed provider commitment, key compromise, or a requested refund needs manual
+investigation. It is not a general-purpose escrow or high-value payment guarantee.
+
+Protocol references: [official build guide](https://pioneers.agnic.ai/build/bitcoin-pay) and
+[GoBTC Pay's multisig and settlement FAQ](https://gobtcpay.com/).
+
 ## System design
 
 ```text
@@ -137,11 +205,11 @@ the plans in stages:
 
 | Stage | Deterministic code | AI judgment | Resulting evidence |
 | --- | --- | --- | --- |
-| Interpret | Validates the schema and preserves authoritative UI choices | Extracts objective, audience, creative requirements, budget, deadline and authority | Versioned mandate |
-| Enumerate | Requests Seller catalog and quotes for every feasible package × scope combination | None—prices and capabilities come only from the Seller | Comparable plan matrix |
-| Filter | Rejects capability, format, deadline and customer-budget violations | Cannot restore an ineligible plan | Eligible plan set with rejection reasons |
-| Rank | Supplies only eligible plans and bounded decision factors | Assesses objective fit, creative fit, evidence quality and testing value | Ranked plans and concise rationale |
-| Select | Verifies the returned plan ID and recomputes all monetary checks | Chooses the best-value plan that materially advances the objective | Selected plan plus cheaper/broader trade-offs |
+| Understand (`Interpret`) | Validates the schema and preserves authoritative UI choices | Extracts objective, audience, creative requirements, budget, deadline and authority | Versioned mandate |
+| Compare (`Enumerate`) | Requests Seller catalog and quotes for every feasible package × scope combination | None; prices and capabilities come only from the Seller | Comparable plan matrix |
+| Protect (`Filter`) | Rejects capability, format, deadline and customer-budget violations | Cannot restore an ineligible plan | Eligible plan set with rejection reasons |
+| Recommend (`Rank`) | Supplies only eligible plans and bounded decision factors | Assesses objective fit, creative fit, evidence quality and testing value | Ranked plans and concise rationale |
+| Purchase (`Select`) | Verifies the returned plan ID and recomputes all monetary checks | Chooses the best-value plan that materially advances the objective | Selected plan plus cheaper and broader trade-offs |
 
 This ordering is the key design choice: AI contributes semantic judgment where rules are brittle, but
 never receives the ability to redefine the constraints it is judging inside.
@@ -155,7 +223,7 @@ allowances, which both default to 60,000 sats.
 
 | Control | Enforcement |
 | --- | --- |
-| Customer hard budget | The selected quote plus the maximum real-payment fee reserve must fit inside the confirmed mandate |
+| Customer hard budget | The displayed all-in price includes a Seller-funded network-fee allowance; invoice plus actual fee must not exceed that price or the confirmed mandate in either payment mode |
 | Daily and lifetime ceilings | Authorized spend and active reservations are summed transactionally before new spend is reserved |
 | Concurrent payments | Pending-payment limits prevent multiple workflows from racing for the same allocation |
 | Seller integrity | Product, quote ID, amount, recipient and expiry must match the accepted plan exactly |

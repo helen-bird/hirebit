@@ -242,8 +242,10 @@ async function api(path, options = {}, retry = true) {
 function stageFor(delegation) {
   const campaign = delegation.campaign;
   if (!campaign) return "intent";
+  if (["cancellation_pending", "refund_review_required"].includes(campaign.state)) return "payment";
+  if (campaign.state === "cost_review_required") return "production";
   if (campaign.state === "decision_ready") return "decision";
-  if (["creating_payment", "awaiting_payment", "signing", "submitting_payment", "payment_submitted", "payment_uncertain", "payment_preparation_failed"].includes(campaign.state)) return "payment";
+  if (["creating_payment", "awaiting_payment", "signing", "submitting_payment", "payment_submitted", "payment_uncertain", "payment_origin_review_required", "payment_preparation_failed"].includes(campaign.state)) return "payment";
   if (["paid", "fulfillment", "fulfillment_failed"].includes(campaign.state)) return "production";
   if (["packaging", "packaging_failed", "completed"].includes(campaign.state)) return "package";
   return "decision";
@@ -323,7 +325,13 @@ const stateLabels = {
   creating_campaign: "COMPARING OPTIONS",
   campaign_active: "CAMPAIGN IN PROGRESS",
   execution_paused: "ACTION NEEDED",
+  payment_origin_review_required: "PAYMENT NEEDS REVIEW",
+  campaign_failed: "PLAN NEEDS A CHANGE",
   completed: "CAMPAIGN READY",
+  cancelled: "ORDER CANCELLED",
+  cancellation_pending: "STOP REQUEST IN PROGRESS",
+  refund_review_required: "REFUND NEEDS REVIEW",
+  cost_review_required: "COSTS NEED REVIEW",
   interpretation_failed: "TRY AGAIN",
 };
 
@@ -524,7 +532,7 @@ function selectionSignals(decision) {
   const budget = decision.budgetSats;
   const spend = selected.totalAuthorizedSats ?? quote?.amountSats;
   if (Number.isSafeInteger(budget) && Number.isSafeInteger(spend)) {
-    signals.push(["BUDGET FIT", `${spend.toLocaleString()} sats authorized · ${(budget - spend).toLocaleString()} sats kept`]);
+    signals.push(["BUDGET FIT", `${spend.toLocaleString()} sats maximum, payment fee included · ${(budget - spend).toLocaleString()} sats kept`]);
   }
   return signals.slice(0, 3);
 }
@@ -561,7 +569,7 @@ function customerDecisionRationale(campaign) {
   if (hookCount > 1) {
     parts.push(`${hookCount} distinct openings give the launch meaningful creative testing.`);
   }
-  parts.push(`The selected scope costs ${spend.toLocaleString()} sats${remaining === null ? "." : ` and leaves ${remaining.toLocaleString()} sats available.`}`);
+  parts.push(`The all-in price is up to ${spend.toLocaleString()} sats, including the payment fee${remaining === null ? "." : `, leaving ${remaining.toLocaleString()} sats available.`}`);
   const cheaper = decision.tradeoffs?.cheaper;
   if (cheaper && cheaper.planId !== selected.planId && Number.isSafeInteger(cheaper.totalAuthorizedSats)) {
     parts.push(`The cheaper ${cheaper.label.toLowerCase()} option saves ${(spend - cheaper.totalAuthorizedSats).toLocaleString()} sats, but removes the extra openings needed to compare hook performance.`);
@@ -615,7 +623,7 @@ function rejectedPackageItems(rejected, decision, campaign) {
       return {
         title: `${productDisplayName(productId, largest.productName)}${hookLabel}`,
         meta: "Right format · oversized scope",
-        detail: `${hooks.at(-1)} hooks would cost ${Number(spend).toLocaleString()} sats${Number.isSafeInteger(budget) ? `—${Math.max(0, spend - budget).toLocaleString()} above your limit` : ""}${Number.isSafeInteger(turnaround) && Number.isSafeInteger(deadline) ? `—and use the full ${deadline}-minute delivery window` : ""}. ${selectedHooks} hooks keeps meaningful launch testing inside budget.`,
+        detail: `${hooks.at(-1)} hooks would cost ${Number(spend).toLocaleString()} sats${Number.isSafeInteger(budget) ? `—${Math.max(0, spend - budget).toLocaleString()} above your limit` : ""}${Number.isSafeInteger(turnaround) && Number.isSafeInteger(deadline) ? `—and use the full ${deadline}-minute delivery window` : ""}. ${selectedHooks === 1 ? "The selected one-opening scope preserves the right production format inside budget." : `${selectedHooks} hooks preserve useful launch testing inside budget.`}`,
       };
     }
     if (codes.has("reference_adaptation_unsupported") && productId === "creator_pitch") {
@@ -660,9 +668,12 @@ function rankExplanation(plan, decision, campaign) {
   const turnaround = plan.quote?.estimatedTurnaroundMinutes;
   const usesReference = Boolean(plan.quote?.brief?.evidenceUrl);
   if (plan.planId === selected.planId) {
+    const openingValue = hooks === 1
+      ? "one focused opening without buying unnecessary variants"
+      : `${hooks} different openings to test`;
     const reasons = [usesReference
-      ? `Chosen because it follows your reference action and gives ${hooks} different openings to test.`
-      : `Chosen because it offers the strongest overall campaign fit with ${hooks} openings to test.`];
+      ? `Chosen because it follows your reference action and provides ${openingValue}.`
+      : `Chosen because it offers the strongest overall campaign fit with ${openingValue}.`];
     if (Number.isSafeInteger(budget)) reasons.push(`It stays ${(budget - spend).toLocaleString()} sats under budget.`);
     if (Number.isSafeInteger(deadline) && Number.isSafeInteger(turnaround) && deadline > turnaround) {
       reasons.push(`It also keeps ${deadline - turnaround} minutes of delivery buffer.`);
@@ -890,6 +901,7 @@ function planRecap(campaign) {
   );
   const numbers = node("div", "plan-recap-numbers");
   numbers.append(node("b", "", `${spend.toLocaleString()} / ${Number(budget ?? spend).toLocaleString()} sats`));
+  numbers.append(node("small", "", "Payment fee included; you will not exceed this price"));
   if (remaining !== null) numbers.append(node("small", "", `${Math.max(0, remaining).toLocaleString()} remaining`));
   recap.append(copy, numbers);
   const compared = decision.plans?.length ?? decision.candidates?.length ?? 0;
@@ -928,7 +940,7 @@ function renderDecision(delegation, { transient = false } = {}) {
     node("strong", "best-fit-scope", selectedPlanSummary(decision)),
     node("p", "", concise(customerDecisionRationale(campaign), 300)),
   );
-  best.append(bestCopy, node("strong", "best-fit-price", `${decision.selected.quote.amountSats.toLocaleString()} sats`));
+  best.append(bestCopy, node("strong", "best-fit-price", `${(decision.selected.totalAuthorizedSats ?? decision.selected.quote.amountSats).toLocaleString()} sats maximum · fee included`));
   const why = node("div", "selection-proof");
   why.append(node("span", "selection-proof-label", "WHY THIS PLAN WON"));
   for (const [label, value] of selectionSignals(decision)) {
@@ -944,14 +956,14 @@ function renderDecision(delegation, { transient = false } = {}) {
   const meter = node("div", "budget-meter");
   const meterHead = node("div", "budget-meter-head");
   meterHead.append(
-    node("span", "", "AUTHORIZED SPEND"),
+    node("span", "", "MAXIMUM AUTHORIZED SPEND"),
     node("strong", "", `${authorized.toLocaleString()} / ${budget.toLocaleString()} sats`),
   );
   const track = node("div", "budget-meter-track");
   const fill = node("i");
   fill.style.width = `${Math.min(100, (authorized / budget) * 100)}%`;
   track.append(fill);
-  meter.append(meterHead, track, node("small", "", `${Math.max(0, budget - authorized).toLocaleString()} sats remain available`));
+  meter.append(meterHead, track, node("small", "", `Payment fee included · ${Math.max(0, budget - authorized).toLocaleString()} sats remain available`));
   stageContent.append(meter);
   const guardrails = codeGuardrails(campaign);
   if (guardrails) stageContent.append(guardrails);
@@ -991,7 +1003,7 @@ function renderDecision(delegation, { transient = false } = {}) {
     top.append(
       node("span", "package-option-status", selected ? "✓ SELECTED" : candidate.eligible ? "MATCH" : "NOT A MATCH"),
       node("b", "", candidate.quote
-        ? `${candidate.quote.amountSats.toLocaleString()} sats`
+        ? `${(candidate.totalAuthorizedSats ?? candidate.quote.amountSats).toLocaleString()} sats`
         : `from ${Number(profile.basePriceSats ?? 0).toLocaleString()} sats`),
     );
     card.append(
@@ -1007,8 +1019,11 @@ function renderDecision(delegation, { transient = false } = {}) {
   comparison.append(list);
   stageContent.append(comparison);
   if (!transient && delegation.state === "awaiting_purchase_confirmation") {
-    const confirm = node("button", "button confirm", `Approve ${productDisplayName(decision.selected.productId, decision.selected.productName)} · ${decision.selected.quote.amountSats.toLocaleString()} sats`);
-    confirm.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/confirm-purchase`, {}));
+    const maximumAuthorized = decision.selected.totalAuthorizedSats ?? decision.selected.quote.amountSats;
+    const confirm = node("button", "button confirm", `Approve ${productDisplayName(decision.selected.productId, decision.selected.productName)} · up to ${maximumAuthorized.toLocaleString()} sats`);
+    confirm.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/confirm-purchase`, {
+      selectionDigest: delegation.campaign.purchaseSelectionDigest,
+    }));
     showActions(confirm);
   }
 }
@@ -1017,18 +1032,25 @@ function renderPayment(delegation) {
   const campaign = delegation.campaign;
   const payment = campaign.sellerOrder?.payment ?? {};
   const simulated = payment.simulated === true || campaign.paymentAttempt?.receipt?.simulated === true;
-  stageContent.append(title(simulated ? "SIMULATED GOBTC SETTLEMENT" : "BITCOIN PAYMENT", "Authorizing the selected package"));
+  stageContent.append(title(simulated ? "SIMULATED PAYMENT AUTHORIZATION" : "BITCOIN PAYMENT", "Authorizing the selected package"));
   const recap = planRecap(campaign);
   if (recap) stageContent.append(recap);
   const card = node("div", "payment-card");
   const copy = node("div");
+  const servicePrice = campaign.sellerOrder?.amountSats ?? campaign.decision?.selected.quote.amountSats ?? 0;
+  const preparedFee = campaign.paymentAttempt?.prepared?.validation?.feeSats;
+  const feeSats = Number.isSafeInteger(preparedFee)
+    ? preparedFee
+    : Number(campaign.decision?.feeReserveSats ?? 0);
+  const totalSats = servicePrice + feeSats;
   copy.append(node("h3", "", payment.authorization === "authorized"
-    ? (simulated ? "Simulated settlement authorized" : "Payment authorized")
-    : (simulated ? "Awaiting simulated settlement" : "Awaiting GoBTC")));
+    ? (simulated ? "Demo payment authorized" : "Payment authorized")
+    : (simulated ? "Authorizing demo payment" : "Awaiting GoBTC")));
   copy.append(node("p", "", simulated
     ? "Hirebit is exercising the same order, authorization, and fulfillment gates while GoBTC is unavailable."
     : "The agent is securely authorizing the selected package."));
-  card.append(copy, node("div", "amount", `${campaign.sellerOrder?.amountSats ?? campaign.decision?.selected.quote.amountSats ?? 0} sats`));
+  copy.append(node("small", "", `${servicePrice.toLocaleString()} service + ${feeSats.toLocaleString()} ${simulated ? "simulated" : "network"} fee · within the quoted maximum`));
+  card.append(copy, node("div", "amount", `${totalSats.toLocaleString()} sats`));
   stageContent.append(card);
   if (simulated) stageContent.append(node("div", "notice neutral", "GOBTC SERVICE UNAVAILABLE · Provider responses are simulated. No Bitcoin moves and no txid is claimed."));
   if (campaign.lastError) stageContent.append(node("div", "notice", "Payment needs attention. The agent will keep checking safely."));
@@ -1038,9 +1060,12 @@ function renderExecutionPaused(delegation) {
   const campaign = delegation.campaign;
   const errorCode = campaign?.lastError?.code;
   const allowanceReached = ["daily_spend_limit", "lifetime_spend_limit"].includes(errorCode);
+  const feeTooHigh = ["psbt_fee_exceeded", "psbt_fee_rate_exceeded", "campaign_budget_exceeded"].includes(errorCode)
+    && campaign?.state === "payment_preparation_failed";
   stageContent.append(title(
     "AUTOMATIC PURCHASE PAUSED",
-    allowanceReached ? "The preview allowance needs to reset" : "The order needs another attempt",
+    allowanceReached ? "The preview allowance needs to reset"
+      : feeTooHigh ? "The current network fee is above your price limit" : "The order needs another attempt",
   ));
   const recap = planRecap(campaign);
   if (recap) stageContent.append(recap);
@@ -1049,15 +1074,45 @@ function renderExecutionPaused(delegation) {
     "notice",
     allowanceReached
       ? "The agent selected the plan automatically, but the shared preview allowance blocked authorization. No payment was made."
+      : feeTooHigh
+        ? "No payment was submitted. The agent will only retry this same order within your approved price; a higher price would require a new offer and your confirmation."
       : "The agent selected the plan automatically, but could not finish authorization. No duplicate payment will be created.",
   ));
-  const retry = node("button", "button confirm", "Retry automatic purchase");
+  const retry = node("button", "button confirm", feeTooHigh ? "Recheck the network fee" : "Retry automatic purchase");
   retry.addEventListener("click", async () => {
     retry.disabled = true;
     retry.textContent = "Retrying…";
     await act(`/v1/delegations/${encodeURIComponent(delegation.id)}/resume`, {});
   });
   showActions(retry);
+}
+
+function renderPaymentOriginReview(delegation) {
+  updateStages(delegation, "payment");
+  stageContent.append(title("PAYMENT REVIEW", "We’re checking who paid this invoice"));
+  const recap = planRecap(delegation.campaign);
+  if (recap) stageContent.append(recap);
+  stageContent.append(node("p", "hero-copy", "The Seller reports a paid invoice, but Hirebit cannot match it to this Buyer’s payment submission. We have paused the purchase record and will not charge the Buyer’s budget or retry payment automatically. An operator must reconcile the original payment before this can continue."));
+}
+
+function renderCampaignFailed(delegation) {
+  updateStages(delegation, "decision");
+  const campaign = delegation.campaign;
+  const noEligiblePlan = campaign?.lastError?.code === "no_eligible_quote";
+  stageContent.append(title(
+    "PLAN NEEDS A CHANGE",
+    noEligiblePlan ? "No package fits every current limit" : "Package comparison could not finish",
+  ));
+  stageContent.append(node(
+    "p",
+    "flow-guidance",
+    noEligiblePlan
+      ? "The requested scope, budget, deadline, and reference requirements do not currently overlap. Adjust the brief and start a new run."
+      : "Your brief and references are still available. Adjust the brief or try again when the service is ready.",
+  ));
+  const edit = node("button", "button primary", "Edit brief and try again");
+  edit.addEventListener("click", () => restoreBrief(delegation));
+  showActions(edit);
 }
 
 function renderProduction(delegation) {
@@ -1132,6 +1187,10 @@ function renderPackage(delegation) {
     return;
   }
   const simulated = campaignPackage.paymentProof.simulated === true;
+  const completedFeeSats = Number(campaignPackage.summary.spend.networkFeeSats ?? 0);
+  const completedTotalSats = Number(campaignPackage.summary.spend.spentSats ?? 0);
+  const completedServiceSats = Number(campaignPackage.summary.spend.invoiceSats
+    ?? Math.max(0, completedTotalSats - completedFeeSats));
   stageContent.append(title(
     "CAMPAIGN READY",
     campaignPackage.summary.subject ?? "Campaign package",
@@ -1156,9 +1215,95 @@ function renderPackage(delegation) {
   }
   stageContent.append(dataGrid([
     ["PACKAGE", productDisplayName(campaignPackage.summary.selectedProduct.id, campaignPackage.summary.selectedProduct.name)],
-    ["SPEND", `${campaignPackage.summary.spend.spentSats} sats`],
+    ["SERVICE", `${completedServiceSats} sats`],
+    ["PAYMENT FEE", `${completedFeeSats} sats${simulated ? " simulated" : ""}`],
+    ["TOTAL SPEND", `${completedTotalSats} sats`],
     ["REMAINING", `${campaignPackage.summary.spend.remainingBudgetSats} sats`],
     ["PAYMENT", simulated ? "Simulated GoBTC · no Bitcoin" : "Bitcoin mainnet"],
+  ]));
+  if (delegation.resolution) {
+    stageContent.append(node("p", "notice", "Your issue is recorded for review. No refund has been sent."));
+  } else if (campaign.completedAt && Date.now() <= Date.parse(campaign.completedAt) + 72 * 60 * 60 * 1000) {
+    const report = node("button", "button secondary", "Report a delivery issue");
+    report.addEventListener("click", () => openDeliveryIssueDialog(delegation));
+    showActions(report);
+  }
+}
+
+function openDeliveryIssueDialog(delegation) {
+  const video = delegation.campaign?.package?.files?.find((file) => file.mediaType?.startsWith("video/"));
+  if (!video) return toast("The delivered video is unavailable for review", true);
+  const dialog = node("dialog", "review-dialog");
+  const form = node("form");
+  form.method = "dialog";
+  form.append(node("h2", "", "Report a delivery issue"), node("p", "", "Tell us what the approved brief required and what appears in the delivered video. We’ll review the evidence; a quality refund, if approved, is limited to 20% of the service price. No free rework is included."));
+  const fields = [
+    ["What should appear?", "expected", "textarea"],
+    ["What actually appears?", "observed", "textarea"],
+    ["Where in the video? (seconds)", "timecodeSeconds", "input"],
+  ];
+  const controls = {};
+  for (const [labelText, key, tag] of fields) {
+    const label = node("label", "", labelText);
+    const control = node(tag);
+    control.name = key;
+    control.required = key !== "timecodeSeconds";
+    if (tag === "input") { control.type = "number"; control.min = "0"; control.max = "3600"; control.step = "0.1"; }
+    else control.maxLength = 500;
+    label.append(control);
+    form.append(label);
+    controls[key] = control;
+  }
+  const actions = node("div", "review-dialog-actions");
+  const close = node("button", "button secondary", "Back");
+  close.type = "button";
+  close.addEventListener("click", () => dialog.close());
+  const submit = node("button", "button confirm", "Send for review");
+  submit.type = "submit";
+  actions.append(close, submit);
+  form.append(actions);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    const expected = controls.expected.value.trim();
+    const observed = controls.observed.value.trim();
+    const seconds = controls.timecodeSeconds.value;
+    const sent = await act(`/v1/delegations/${encodeURIComponent(delegation.id)}/request-resolution`, {
+      reason: `Delivered video differs from the approved brief${seconds ? ` at ${seconds}s` : ""}`,
+      evidence: {
+        expected, observed, artifactPath: video.path,
+        ...(seconds ? { timecodeSeconds: Number(seconds) } : {}),
+      },
+    });
+    if (sent) dialog.close();
+    else submit.disabled = false;
+  });
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.append(form);
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+function renderCancellation(delegation) {
+  const campaign = delegation.campaign;
+  const state = campaign?.state ?? delegation.state;
+  const heading = state === "cancelled" ? "Your order was stopped"
+    : state === "refund_review_required" ? "Your service refund needs review"
+      : state === "cost_review_required" ? "We’re checking production costs" : "We’re stopping this order";
+  stageContent.append(title("ORDER UPDATE", heading));
+  const copy = state === "cancelled"
+    ? campaign?.sellerOrder
+      ? "GoBTC confirmed the invoice ended without payment. No video production was started."
+      : "This request stopped before an order or payment was placed."
+    : state === "refund_review_required"
+      ? "Production was stopped before it started. The service price is marked for refund review; no Bitcoin has been returned yet. Any network fee already spent is not included."
+      : state === "cost_review_required"
+        ? "Production had already started. We’ll check documented costs before deciding what part of the service price can be returned. No refund has been sent."
+        : "A payment or order may still be in flight. We’ve asked the Seller to stop new production and are checking GoBTC before confirming the outcome.";
+  stageContent.append(node("p", "hero-copy", copy));
+  if (state === "refund_review_required") stageContent.append(dataGrid([
+    ["SERVICE PRICE TO REVIEW", `${campaign.cancellation?.refund?.amountSats ?? campaign.sellerOrder?.amountSats ?? "—"} sats`],
+    ["BTC REFUND", "Not sent"],
   ]));
 }
 
@@ -1178,9 +1323,16 @@ function render(delegation) {
   stageContent.className = "stage-content";
   updateStages(delegation);
   if (delegation.state === "declined") renderDeclined(delegation);
+  else if (["cancelled", "cancellation_pending", "refund_review_required", "cost_review_required"].includes(delegation.state)) renderCancellation(delegation);
   else if (delegation.state === "clarification_required") renderQuestions(delegation);
   else if (delegation.state === "approval_required") renderMandate(delegation);
   else if (["advisory_ready", "awaiting_purchase_confirmation"].includes(delegation.state)) renderDecision(delegation);
+  else if (delegation.state === "campaign_failed" || delegation.campaign?.state === "decision_failed") {
+    renderCampaignFailed(delegation);
+  }
+  else if (delegation.state === "payment_origin_review_required" || delegation.campaign?.state === "payment_origin_review_required") {
+    renderPaymentOriginReview(delegation);
+  }
   else if (delegation.state === "execution_paused"
     || ["spend_blocked", "order_failed", "payment_preparation_failed"].includes(delegation.campaign?.state)) {
     renderExecutionPaused(delegation);
@@ -1191,12 +1343,29 @@ function render(delegation) {
   else if (delegation.campaign) renderDecision(delegation);
   else {
     stageContent.append(title("UNDERSTANDING YOUR BRIEF", "Building a clear campaign plan"));
-    if (delegation.lastError) stageContent.append(node("div", "notice", "We couldn’t finish understanding the brief. Your information is safe—try again."));
+    if (delegation.lastError && delegation.lastError.code !== "model_attempt_limit") {
+      stageContent.append(node("div", "notice", "We couldn’t finish understanding the brief. Your information is safe—try again."));
+    }
     if (delegation.state === "interpretation_failed") {
       const retry = node("button", "button primary", "Retry interpretation");
+      const retryAt = Date.parse(delegation.lastError?.retryAt ?? "");
+      if (delegation.lastError?.code === "model_attempt_limit" && Number.isFinite(retryAt) && retryAt > Date.now()) {
+        stageContent.append(node("p", "flow-guidance", `This brief has reached its hourly limit. You can retry after ${new Date(retryAt).toLocaleString()}.`));
+        retry.disabled = true;
+      }
       retry.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/retry-interpretation`, {}));
       showActions(retry);
     }
+  }
+  if (delegation.campaign && !["completed", "cancelled", "cancellation_pending", "refund_review_required", "cost_review_required", "payment_origin_review_required"].includes(delegation.state)) {
+    const cancel = node("button", "button secondary", "Request cancellation");
+    cancel.addEventListener("click", () => {
+      if (window.confirm("Ask Hirebit to stop this order? If payment or production has started, we’ll review the outcome and any costs before confirming a refund.")) {
+        void act(`/v1/delegations/${encodeURIComponent(delegation.id)}/cancel`, {});
+      }
+    });
+    actionBar.append(cancel);
+    actionBar.classList.remove("hidden");
   }
   schedulePoll(delegation);
 }
@@ -1243,7 +1412,11 @@ async function loadRecent() {
 
 function schedulePoll(delegation) {
   clearTimeout(pollTimer);
-  if (["completed", "cancelled", "declined", "clarification_required", "approval_required", "awaiting_purchase_confirmation", "advisory_ready", "execution_paused", "interpretation_failed", "campaign_failed"].includes(delegation.state)) return;
+  const watchingCancelledOrder = delegation.state === "cancelled"
+    && delegation.campaign?.sellerOrder && delegation.campaign?.cancellation?.requestedAt
+    && Date.now() < Date.parse(delegation.campaign.cancellation.requestedAt) + 7 * 24 * 60 * 60 * 1000;
+  if (["completed", "refund_review_required", "cost_review_required", "payment_origin_review_required", "declined", "clarification_required", "approval_required", "awaiting_purchase_confirmation", "advisory_ready", "execution_paused", "interpretation_failed", "campaign_failed"].includes(delegation.state)
+    || (delegation.state === "cancelled" && !watchingCancelledOrder)) return;
   pollTimer = setTimeout(async () => {
     try {
       const next = delegation.campaignId

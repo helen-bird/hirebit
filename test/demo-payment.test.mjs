@@ -45,8 +45,17 @@ test("demo payment is durable, idempotent, and explicitly non-mainnet", async ()
   assert.match(first.paymentId, /^demo_pay_/u);
   assert.equal(first.simulated, true);
   assert.equal(first.status, "initiated");
+  assert.equal(first.paidAt, null);
+  assert.equal(first.simulatedAuthorizedAt, null);
   assert.deepEqual(first.transactions, []);
   assert.equal(payments.readiness().mainnet, false);
+});
+
+test("demo wallet rejects invalid simulated fee configuration", () => {
+  assert.throws(
+    () => new DemoInstantWalletClient({ authorizePayment() {}, feeSats: -1 }),
+    /feeSats must be a non-negative integer/u,
+  );
 });
 
 test("only explicit demo wallet submission authorizes production and never creates chain proof", async () => {
@@ -58,6 +67,7 @@ test("only explicit demo wallet submission authorizes production and never creat
 
   const wallet = new DemoInstantWalletClient({
     authorizePayment: (paymentId) => seller.authorizeDemoPayment(paymentId),
+    feeSats: 500,
     clock: () => 1_800_000_000_000,
   });
   const prepared = await wallet.preparePayment({
@@ -66,10 +76,20 @@ test("only explicit demo wallet submission authorizes production and never creat
     recipientAddress: order.payment.btcAddress,
   });
   assert.equal(prepared.simulated, true);
-  assert.equal(prepared.validation.feeSats, 0);
+  assert.equal(prepared.validation.feeSats, 500);
+  assert.equal(prepared.validation.feeBasis, "simulated_policy_reserve");
+  assert.equal(prepared.summary.feeSats, 500);
+  assert.equal((await wallet.readiness()).simulatedFeeSats, 500);
   const receipt = await wallet.submitPrepared(prepared);
   assert.match(receipt.instantReceiptId, /^demo_receipt_/u);
   assert.equal(receipt.simulated, true);
+  assert.equal(receipt.submittedAt, "2027-01-15T08:00:00.000Z");
+
+  const accepted = await seller.payments.getPayment(order.payment.id);
+  assert.equal(accepted.status, "paid");
+  assert.equal(accepted.paidAt, null);
+  assert.equal(accepted.simulatedAuthorizedAt, receipt.submittedAt);
+  assert.deepEqual(accepted.transactions, []);
 
   await seller.syncOrder(order.id, { awaitProduction: true });
   const completed = seller.getOrder(order.id);
@@ -77,8 +97,32 @@ test("only explicit demo wallet submission authorizes production and never creat
   assert.equal(producer.calls, 1);
   assert.equal(completed.payment.authorization, "authorized");
   assert.equal(completed.payment.settlement, "pending");
+  assert.equal(completed.payment.paidAt, null);
   assert.deepEqual(completed.payment.txids, []);
   assert.equal(completed.payment.network, "simulation");
+});
+
+test("legacy demo authorization timestamps cannot appear as on-chain settlement", async () => {
+  const { payments } = await fixture();
+  const created = await payments.createPayment({ amountSats: 1300, description: "Legacy demo", externalId: "legacy-order" });
+  await payments.store.transaction((state) => {
+    const payment = state.payments[created.paymentId];
+    payment.status = "paid";
+    payment.paidAt = "2026-09-20T08:00:00.000Z";
+    delete payment.simulatedAuthorizedAt;
+  });
+  const legacy = await payments.getPayment(created.paymentId);
+  assert.equal(legacy.paidAt, null);
+  assert.equal(legacy.simulatedAuthorizedAt, "2026-09-20T08:00:00.000Z");
+  assert.deepEqual(legacy.transactions, []);
+});
+
+test("expired demo payment cannot be authorized", async () => {
+  const { payments } = await fixture();
+  const created = await payments.createPayment({ amountSats: 1300, description: "Expired demo", externalId: "expired-order" });
+  payments.clock = () => 1_800_000_000_000 + (31 * 60 * 1000);
+  await assert.rejects(payments.authorizePayment(created.paymentId), (error) => error.code === "demo_payment_expired");
+  assert.equal((await payments.getPayment(created.paymentId)).status, "initiated");
 });
 
 test("real payment clients cannot access the demo authorization path", async () => {

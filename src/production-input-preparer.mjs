@@ -11,6 +11,8 @@ import { deepSeekKeyProvider } from "./buyer/mandate-extractor.mjs";
 import { AppError } from "./errors.mjs";
 import { isSupportedProductionLanguage } from "./production-contract.mjs";
 import { safeServiceBaseUrl } from "./security.mjs";
+import { assertProductionMaySpend } from "./production-cancellation.mjs";
+import { callSellerProviderTwice } from "./seller-provider-attempt.mjs";
 
 const execFileAsync = promisify(execFile);
 const FORMAT = "seller.production-inputs@1";
@@ -679,9 +681,10 @@ async function verifiedManifest(path, { order, quote, commissionSha256, jobDir }
 }
 
 export class ProductionInputPreparer {
-  constructor({ copyProvider, voiceProvider }) {
+  constructor({ copyProvider, voiceProvider, spendAllowed = null }) {
     this.copyProvider = copyProvider;
     this.voiceProvider = voiceProvider;
+    this.spendAllowed = spendAllowed;
   }
 
   async readiness() {
@@ -722,6 +725,7 @@ export class ProductionInputPreparer {
     const requirements = creativeRequirements(commission.quote);
     await mkdir(join(directory, "audio"), { recursive: true, mode: 0o700 });
     const copyPath = join(directory, "copy.json");
+    const copyAttemptPath = join(directory, "copy.attempt.json");
     let copyEnvelope;
     if (await exists(copyPath)) {
       try { copyEnvelope = JSON.parse(await readFile(copyPath, "utf8")); } catch {
@@ -731,28 +735,38 @@ export class ProductionInputPreparer {
         throw new AppError("production_copy_mismatch", "Persisted production copy is not bound to this commission", 503);
       }
     } else {
+      await assertProductionMaySpend(jobDir, { orderId: order.id, spendAllowed: this.spendAllowed });
       const targetDurationSeconds = referenceAdaptation === null ? null : Number(Math.min(
         16,
         Math.max(8, Number(referenceAdaptation.source?.durationSeconds)),
       ).toFixed(3));
-      const response = await this.copyProvider.generate({
-        productId: commission.quote.product.id,
-        productName: commission.quote.product.name,
-        objectives: commission.quote.product.objectives ?? [],
-        brief: sanitizedBrief(commission),
-        languages: [...new Set(matrix.map((item) => item.language))],
-        hookCount: commission.quote.addOns?.hookVariants ?? 1,
-        assetMetadata: safeAssetMetadata(commission.localAssets),
-        targetDurationSeconds,
+      copyEnvelope = await callSellerProviderTwice({
+        path: copyAttemptPath,
+        identity: { format: "seller.copy-attempt@1", orderId: order.id, commissionSha256 },
+        uncertainCode: "production_copy_submission_uncertain",
+        beforeCall: () => assertProductionMaySpend(jobDir, { orderId: order.id, spendAllowed: this.spendAllowed }),
+        call: () => this.copyProvider.generate({
+          productId: commission.quote.product.id,
+          productName: commission.quote.product.name,
+          objectives: commission.quote.product.objectives ?? [],
+          brief: sanitizedBrief(commission),
+          languages: [...new Set(matrix.map((item) => item.language))],
+          hookCount: commission.quote.addOns?.hookVariants ?? 1,
+          assetMetadata: safeAssetMetadata(commission.localAssets),
+          targetDurationSeconds,
+        }),
+        finalize: async (response) => {
+          const envelope = {
+            format: COPY_FORMAT,
+            commissionSha256,
+            provider: response.provider,
+            model: response.model ?? null,
+            variants: validateCopyPayload(response.value, matrix, commission.quote.product.id),
+          };
+          await writeFile(copyPath, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+          return envelope;
+        },
       });
-      copyEnvelope = {
-        format: COPY_FORMAT,
-        commissionSha256,
-        provider: response.provider,
-        model: response.model ?? null,
-        variants: validateCopyPayload(response.value, matrix, commission.quote.product.id),
-      };
-      await writeFile(copyPath, `${JSON.stringify(copyEnvelope, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     }
     copyEnvelope.variants = validateCopyPayload({ variants: copyEnvelope.variants }, matrix, commission.quote.product.id);
     const requestedCharacters = copyEnvelope.variants.reduce((sum, variant) => (
@@ -771,6 +785,7 @@ export class ProductionInputPreparer {
         const relative = `audio/${stem}.wav`;
         const destination = join(directory, relative);
         const recordPath = join(directory, `audio/${stem}.json`);
+        const attemptPath = join(directory, `audio/${stem}.attempt.json`);
         const scriptSha256 = sha256(Buffer.from(turn.text));
         let record;
         if (await exists(recordPath)) {
@@ -784,40 +799,54 @@ export class ProductionInputPreparer {
             throw new AppError("production_voice_record_invalid", "Persisted voice requirements do not match the paid quote", 503);
           }
         } else {
+          await assertProductionMaySpend(jobDir, { orderId: order.id, spendAllowed: this.spendAllowed });
           if (await exists(destination)) {
             throw new AppError("production_voice_state_uncertain", "Voice file exists without its durable generation record", 503, { file: relative });
           }
           const temporary = join(dirname(destination), `.${basename(destination)}.${randomUUID()}.partial`);
-          let metadata;
-          let bytes;
           try {
-            metadata = await this.voiceProvider.synthesize({
-              text: turn.text, language: variant.language, role: turn.role, destination: temporary,
-              requirements: requestedVoice,
+            record = await callSellerProviderTwice({
+              path: attemptPath,
+              identity: {
+                format: "seller.voice-attempt@1", orderId: order.id, scriptSha256, requestedVoice,
+                maximumBillableCharacters: [...turn.text].length,
+              },
+              uncertainCode: "production_voice_submission_uncertain",
+              beforeCall: () => assertProductionMaySpend(jobDir, { orderId: order.id, spendAllowed: this.spendAllowed }),
+              call: async () => {
+                await rm(temporary, { force: true });
+                return await this.voiceProvider.synthesize({
+                  text: turn.text, language: variant.language, role: turn.role, destination: temporary,
+                  requirements: requestedVoice,
+                });
+              },
+              finalize: async (metadata) => {
+                const bytes = await readFile(temporary);
+                if (bytes.length === 0) throw new AppError("production_voice_invalid", "Voice provider returned an empty audio file", 502);
+                await rename(temporary, destination);
+                const generatedRecord = {
+                  role: turn.role,
+                  file: relative,
+                  mediaType: metadata.mediaType ?? "audio/wav",
+                  provider: metadata.provider,
+                  voiceId: metadata.voiceId ?? null,
+                  commercialUseApproved: metadata.commercialUseApproved === true,
+                  requestedVoice,
+                  requirementsApplied: metadata.requirementsApplied === true,
+                  appliedVoice: metadata.appliedVoice ?? null,
+                  billableCharacters: Number.isSafeInteger(metadata.billableCharacters)
+                    ? metadata.billableCharacters
+                    : [...turn.text].length,
+                  scriptSha256,
+                  sha256: sha256(bytes),
+                };
+                await writeFile(recordPath, `${JSON.stringify(generatedRecord, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+                return generatedRecord;
+              },
             });
-            bytes = await readFile(temporary);
-            if (bytes.length === 0) throw new AppError("production_voice_invalid", "Voice provider returned an empty audio file", 502);
-            await rename(temporary, destination);
           } finally {
             await rm(temporary, { force: true });
           }
-          record = {
-            role: turn.role,
-            file: relative,
-            mediaType: metadata.mediaType ?? "audio/wav",
-            provider: metadata.provider,
-            voiceId: metadata.voiceId ?? null,
-            commercialUseApproved: metadata.commercialUseApproved === true,
-            requestedVoice,
-            requirementsApplied: metadata.requirementsApplied === true,
-            appliedVoice: metadata.appliedVoice ?? null,
-            billableCharacters: Number.isSafeInteger(metadata.billableCharacters)
-              ? metadata.billableCharacters
-              : [...turn.text].length,
-            scriptSha256,
-            sha256: sha256(bytes),
-          };
-          await writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600, flag: "wx" });
         }
         audio.push(record);
       }

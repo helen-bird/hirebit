@@ -27,6 +27,10 @@ const apiToken = await loadOrCreateToken({
 });
 const store = new JsonStore(resolve(dataDir, process.env.SELLER_STATE_FILE ?? "state.json"));
 await store.initialize();
+const spendAllowed = async (orderId) => {
+  const order = store.snapshot().orders?.[orderId];
+  return order !== undefined && order.cancellation?.state == null;
+};
 
 async function merchantApiKey() {
   if (process.env.GOBTCPAY_MERCHANT_API_KEY) return process.env.GOBTCPAY_MERCHANT_API_KEY;
@@ -66,6 +70,7 @@ const voiceProvider = configuredVoiceProvider === "macos-say-acceptance"
     maxCharactersPerOrder: Number(process.env.GOOGLE_TTS_MAX_CHARACTERS_PER_ORDER ?? 20_000),
   });
 const inputPreparer = new ProductionInputPreparer({
+  spendAllowed,
   copyProvider: new DeepSeekProductionCopyProvider({
     baseUrl: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
     model: process.env.DEEPSEEK_MODEL ?? "deepseek-flash",
@@ -73,6 +78,7 @@ const inputPreparer = new ProductionInputPreparer({
   voiceProvider,
 });
 const videoProvider = new GoogleVeoVideoProvider({
+  spendAllowed,
   projectId: process.env.GOOGLE_CLOUD_PROJECT,
   location: process.env.GOOGLE_VEO_LOCATION ?? "us-central1",
   model: process.env.GOOGLE_VEO_MODEL ?? "veo-3.1-lite-generate-001",
@@ -100,6 +106,7 @@ const isolationVerified = workerMode === "docker"
   && process.env.HYPIT_WORKER_ISOLATION_VERIFIED === "1"
   && dockerIsolation?.verified === true;
 const producer = new HypitAdapter({
+  spendAllowed,
   rootDir,
   dataDir,
   workflowFile: process.env.SELLER_HYPIT_WORKFLOWS ?? "config/hypit-workflows.json",

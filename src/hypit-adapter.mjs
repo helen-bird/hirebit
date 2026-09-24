@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { access, chmod, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
+import { access, chmod, copyFile, link, lstat, mkdir, readFile, readdir, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { pipeline } from "node:stream/promises";
 
 import ffmpegStatic from "ffmpeg-static";
 
@@ -16,7 +18,9 @@ import {
   validateReferenceVisionPlan,
 } from "./reference-vision-planner.mjs";
 import { resolveRegularFile } from "./safe-file.mjs";
+import { assertProductionMaySpend, markProductionCancellation } from "./production-cancellation.mjs";
 import { socialVideoPlatform } from "./security.mjs";
+import { callSellerProviderTwice } from "./seller-provider-attempt.mjs";
 
 function safeName(value) {
   return value.replace(/[^a-zA-Z0-9._-]/gu, "-");
@@ -103,13 +107,97 @@ async function command(program, args, {
   });
 }
 
+const MAX_SOCIAL_REFERENCE_VIDEO_BYTES = 1_000_000_000;
+const MAX_REFERENCE_VIDEO_CACHE_BYTES = 10_000_000_000;
+const referenceCacheQueues = new Map();
+
+export async function assertReferenceDownloadHeadroom(directory, maxBytes, filesystemStats = statfs) {
+  const space = await filesystemStats(directory);
+  const availableBytes = Number(space.bavail) * Number(space.bsize);
+  // Staging can hold video, audio and muxed output simultaneously; preserve
+  // enough room for the per-order copy/cache and the rest of the website.
+  const requiredBytes = maxBytes * 4 + 1_000_000_000;
+  if (!Number.isFinite(availableBytes) || availableBytes < requiredBytes) {
+    throw new AppError("reference_video_disk_full", "Not enough free disk space to download this reference safely", 507);
+  }
+}
+
+export async function pruneReferenceVideoCache(cacheDirectory, {
+  incomingBytes = 0,
+  protectedFilename = null,
+  maxBytes = MAX_REFERENCE_VIDEO_CACHE_BYTES,
+} = {}) {
+  if (!Number.isSafeInteger(incomingBytes) || incomingBytes < 0
+    || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || incomingBytes > maxBytes) {
+    throw new AppError("reference_cache_limit_invalid", "Reference cache limit is invalid", 503);
+  }
+  const files = [];
+  for (const entry of await readdir(cacheDirectory, { withFileTypes: true })) {
+    if (!entry.isFile() || !/^[a-f0-9]{64}\.mp4$/u.test(entry.name)) continue;
+    let info;
+    try { info = await lstat(join(cacheDirectory, entry.name)); }
+    catch (error) { if (error.code === "ENOENT") continue; throw error; }
+    if (info.isFile()) files.push({ name: entry.name, bytes: info.size, mtimeMs: info.mtimeMs });
+  }
+  let total = files.reduce((sum, file) => sum + file.bytes, incomingBytes);
+  for (const file of files.sort((left, right) => left.mtimeMs - right.mtimeMs)) {
+    if (total <= maxBytes) break;
+    if (file.name === protectedFilename) continue;
+    try { await unlink(join(cacheDirectory, file.name)); total -= file.bytes; }
+    catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      total -= file.bytes;
+    }
+  }
+  if (total > maxBytes) throw new AppError("reference_cache_full", "Reference cache cannot fit this video", 507);
+  return total;
+}
+
+async function hashFile(path, maxBytes) {
+  const hash = createHash("sha256");
+  let bytes = 0;
+  for await (const chunk of createReadStream(path)) {
+    bytes += chunk.length;
+    if (bytes > maxBytes) {
+      throw new AppError("external_resource_too_large", `Reference video exceeds the ${maxBytes}-byte limit`, 413);
+    }
+    hash.update(chunk);
+  }
+  return { bytes, sha256: hash.digest("hex") };
+}
+
+async function cacheReferenceVideo(path, cacheDirectory, cacheFilename) {
+  const predecessor = referenceCacheQueues.get(cacheDirectory) ?? Promise.resolve();
+  const work = predecessor.catch(() => {}).then(async () => {
+    const source = await stat(path);
+    await pruneReferenceVideoCache(cacheDirectory, {
+      incomingBytes: source.size,
+      protectedFilename: cacheFilename,
+    });
+    const tempCache = join(cacheDirectory, `${cacheFilename}.${randomUUID()}.tmp`);
+    try {
+      await copyFile(path, tempCache, constants.COPYFILE_EXCL);
+      await chmod(tempCache, 0o600);
+      await link(tempCache, join(cacheDirectory, cacheFilename)).catch((error) => {
+        if (error?.code !== "EEXIST") throw error;
+      });
+    } finally {
+      await unlink(tempCache).catch(() => {});
+    }
+  });
+  referenceCacheQueues.set(cacheDirectory, work);
+  try { await work; } finally {
+    if (referenceCacheQueues.get(cacheDirectory) === work) referenceCacheQueues.delete(cacheDirectory);
+  }
+}
+
 export async function downloadSocialReferenceVideo(value, {
   directory,
   basename = "evidence",
   hypitBin,
   stateHome,
   protectedPaths = [],
-  maxBytes = 25 * 1024 * 1024,
+  maxBytes = MAX_SOCIAL_REFERENCE_VIDEO_BYTES,
   timeoutMs = 300_000,
   commandRunner = command,
 } = {}) {
@@ -117,30 +205,41 @@ export async function downloadSocialReferenceVideo(value, {
   if (platform === null) {
     throw new AppError("reference_video_url_unsupported", "Reference video is not a supported TikTok, Instagram, or YouTube page", 422);
   }
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new AppError("reference_video_limit_invalid", "Reference video size limit is invalid", 503);
+  }
+  maxBytes = Math.min(maxBytes, MAX_SOCIAL_REFERENCE_VIDEO_BYTES);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await mkdir(stateHome, { recursive: true, mode: 0o700 });
+  await assertReferenceDownloadHeadroom(directory, maxBytes);
   const path = join(directory, `${basename}.mp4`);
   const cacheDirectory = join(stateHome, "reference-cache");
   const cacheFilename = `${createHash("sha256").update(value).digest("hex")}.mp4`;
   await mkdir(cacheDirectory, { recursive: true, mode: 0o700 });
+  await pruneReferenceVideoCache(cacheDirectory, { protectedFilename: cacheFilename });
   try {
     const cached = await resolveRegularFile(cacheDirectory, cacheFilename, "reference_video_cache_miss");
     try {
       if (cached.size < 1 || cached.size > maxBytes) {
         throw new AppError("reference_video_cache_invalid", "Cached reference video is not usable", 502);
       }
-      const bytes = await cached.handle.readFile();
-      await writeFile(path, bytes, { mode: 0o600, flag: "wx" });
+      await pipeline(
+        cached.handle.createReadStream({ start: 0, autoClose: false }),
+        createWriteStream(path, { flags: "wx", mode: 0o600 }),
+      );
+      const digest = await hashFile(path, maxBytes);
       return {
         path,
         filename: `${basename}.mp4`,
         mediaType: "video/mp4",
-        bytes: bytes.length,
-        sha256: createHash("sha256").update(bytes).digest("hex"),
+        ...digest,
         sourceHost: new URL(value).hostname,
         sourcePlatform: platform,
         fetchedBy: "hypit-reference-cache",
       };
+    } catch (error) {
+      await unlink(path).catch(() => {});
+      throw error;
     } finally {
       await cached.handle.close().catch(() => {});
     }
@@ -155,6 +254,7 @@ export async function downloadSocialReferenceVideo(value, {
     HOME: directory,
     TMPDIR: directory,
     HYPIT_STATE_HOME: stateHome,
+    HYPIT_FETCH_MAX_BYTES: String(maxBytes),
     PATH: [
       join(projectRoot, ".tools/media-bin"),
       join(projectRoot, ".tools/uv"),
@@ -193,16 +293,13 @@ export async function downloadSocialReferenceVideo(value, {
       throw new AppError("external_resource_too_large", `Reference video exceeds the ${maxBytes}-byte limit`, 413);
     }
     await chmod(path, 0o600);
-    const bytes = await readFile(path);
-    await writeFile(join(cacheDirectory, cacheFilename), bytes, { mode: 0o600, flag: "wx" }).catch((error) => {
-      if (error?.code !== "EEXIST") throw error;
-    });
+    const digest = await hashFile(path, maxBytes);
+    await cacheReferenceVideo(path, cacheDirectory, cacheFilename);
     return {
       path,
       filename: `${basename}.mp4`,
       mediaType: "video/mp4",
-      bytes: bytes.length,
-      sha256: createHash("sha256").update(bytes).digest("hex"),
+      ...digest,
       sourceHost: new URL(value).hostname,
       sourcePlatform: platform,
       fetchedBy: "hypit-media-fetch",
@@ -210,6 +307,13 @@ export async function downloadSocialReferenceVideo(value, {
   } catch (error) {
     await unlink(path).catch(() => {});
     if (error instanceof AppError) {
+      if (error.code === "hypit_command_failed") {
+        let cliError;
+        try { cliError = JSON.parse(error.details?.stdout ?? ""); } catch { /* The command did not emit a JSON error. */ }
+        if (cliError?.format === "hypit.cli-error@1" && cliError.error?.code === "REFERENCE_VIDEO_TOO_LARGE") {
+          throw new AppError("external_resource_too_large", `Reference video exceeds the ${maxBytes}-byte limit`, 413);
+        }
+      }
       if (["hypit_command_failed", "hypit_timeout", "hypit_spawn_failed"].includes(error.code)) {
         throw new AppError(
           "reference_video_fetch_failed",
@@ -336,6 +440,7 @@ export class HypitAdapter {
     referenceAnalysisRunner = command,
     trustedUploadOrigin = null,
     trustedUploadDirectory = null,
+    spendAllowed = null,
   }) {
     this.rootDir = rootDir;
     this.dataDir = dataDir;
@@ -347,6 +452,7 @@ export class HypitAdapter {
     this.commandRunner = typeof commandRunner === "function" ? commandRunner : commandRunner.run.bind(commandRunner);
     this.inputPreparer = inputPreparer;
     this.videoProvider = videoProvider;
+    this.spendAllowed = spendAllowed;
     this.referenceVideoFetcher = referenceVideoFetcher;
     this.referenceVideoStateHome = resolve(referenceVideoStateHome);
     this.referenceVisionProvider = referenceVisionProvider;
@@ -362,6 +468,13 @@ export class HypitAdapter {
     }
     this.trustedUploadOrigin = trustedUploadOrigin;
     this.trustedUploadDirectory = trustedUploadDirectory === null ? null : resolve(trustedUploadDirectory);
+  }
+
+  async requestCancellation(orderId) {
+    if (typeof orderId !== "string" || !/^[a-zA-Z0-9_-]{1,120}$/u.test(orderId)) {
+      throw new AppError("production_cancellation_invalid", "Order ID is invalid", 400);
+    }
+    await markProductionCancellation(resolve(this.dataDir, "jobs", safeName(orderId)), orderId);
   }
 
   async readiness() {
@@ -475,7 +588,33 @@ export class HypitAdapter {
 
   async start({ order, quote }) {
     const context = await this.#context(order, quote, { prepareCommission: true });
-    const { workflow, projectDir, runPath, projectScope, common, environment, denyReadPaths, jobDir, runtimeDataDir, runtimePath } = context;
+    const { workflow, projectDir, runPath, projectScope, common, environment, denyReadPaths, jobDir, runtimeDataDir, runtimePath, commissionPath } = context;
+    const buildAttemptPath = join(jobDir, "build.attempt.json");
+    const buildReceiptPath = join(jobDir, "build.receipt.json");
+    const commissionSha256 = createHash("sha256").update(await readFile(commissionPath)).digest("hex");
+    if (await exists(buildReceiptPath)) {
+      let receipt;
+      try { receipt = JSON.parse(await readFile(buildReceiptPath, "utf8")); } catch {
+        throw new AppError("hypit_build_receipt_invalid", "Persisted Hypit Build receipt is invalid", 503);
+      }
+      if (receipt.format !== "seller.hypit-build-receipt@1" || receipt.orderId !== order.id
+        || receipt.commissionSha256 !== commissionSha256 || typeof receipt.buildId !== "string" || !receipt.buildId) {
+        throw new AppError("hypit_build_receipt_invalid", "Persisted Hypit Build receipt does not match this order", 503);
+      }
+      return { buildId: receipt.buildId };
+    }
+    if (await exists(buildAttemptPath)) {
+      let attempt;
+      try { attempt = JSON.parse(await readFile(buildAttemptPath, "utf8")); } catch {
+        throw new AppError("hypit_build_submission_uncertain", "Hypit Build attempt record is invalid", 503);
+      }
+      if (attempt.format !== "seller.hypit-build-attempt@1" || attempt.orderId !== order.id
+        || attempt.commissionSha256 !== commissionSha256) {
+        throw new AppError("hypit_build_submission_uncertain", "Hypit Build attempt does not match this order", 503);
+      }
+      throw new AppError("hypit_build_submission_uncertain", "Hypit Build may already be running without a durable Build id; do not resubmit", 503);
+    }
+    await assertProductionMaySpend(jobDir, { orderId: order.id, spendAllowed: this.spendAllowed });
     await this.commandRunner(this.hypitBin, ["check", runPath, ...projectScope, "--json"], {
       cwd: projectDir,
       env: environment,
@@ -500,6 +639,11 @@ export class HypitAdapter {
     if (plan.ok === false || plan.requestIssueCount > 0) {
       throw new AppError("hypit_plan_not_ready", "Hypit plan has unresolved production requirements", 503, { plan });
     }
+    await assertProductionMaySpend(jobDir, { orderId: order.id, spendAllowed: this.spendAllowed });
+    await writeFile(buildAttemptPath, `${JSON.stringify({
+      format: "seller.hypit-build-attempt@1", orderId: order.id, commissionSha256,
+      startedAt: new Date().toISOString(),
+    }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     const buildResult = await this.commandRunner(this.hypitBin, [
       "build",
       runPath,
@@ -523,7 +667,15 @@ export class HypitAdapter {
     if (typeof buildId !== "string" || buildId === "") {
       throw new AppError("hypit_build_submission_failed", "Hypit did not return a durable Build id", 502, { build });
     }
+    await writeFile(buildReceiptPath, `${JSON.stringify({
+      format: "seller.hypit-build-receipt@1", orderId: order.id, commissionSha256, buildId,
+      receivedAt: new Date().toISOString(),
+    }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     return { buildId };
+  }
+
+  async recoverUnsubmitted({ order, quote }) {
+    return await this.start({ order, quote });
   }
 
   async resume({ buildId, order, quote }) {
@@ -605,11 +757,24 @@ export class HypitAdapter {
           timeoutMs: 300_000,
         });
       }
+      const exported = await resolveRegularFile(outputDir, filename, "hypit_artifact_invalid");
+      let digest;
+      try {
+        const hash = createHash("sha256");
+        for await (const chunk of exported.handle.createReadStream({ start: 0, autoClose: false })) {
+          hash.update(chunk);
+        }
+        digest = hash.digest("hex");
+      } finally {
+        await exported.handle.close();
+      }
       artifacts.push({
         name: filename,
         output: item.output,
         mediaType: item.mediaType ?? "video/mp4",
         specification: item.specification ?? null,
+        bytes: exported.size,
+        sha256: digest,
       });
     }
     let commissionReceipt = null;
@@ -722,7 +887,9 @@ export class HypitAdapter {
       })) {
         if (typeof value === "string") {
           const basename = field === "referenceUrl" ? "reference" : "evidence";
-          const maxBytes = Number(workflow.maxExternalAssetBytes ?? 25 * 1024 * 1024);
+          const maxBytes = field === "evidenceUrl" && socialVideoPlatform(value) !== null
+            ? MAX_SOCIAL_REFERENCE_VIDEO_BYTES
+            : Number(workflow.maxExternalAssetBytes ?? 25 * 1024 * 1024);
           const trustedFilename = field === "referenceUrl"
             ? trustedUploadFilename(value, this.trustedUploadOrigin)
             : null;
@@ -755,6 +922,9 @@ export class HypitAdapter {
           if (field === "referenceUrl" && !localized.mediaType?.startsWith("image/")) {
             throw new AppError("reference_image_required", "The optional reference input must be a directly downloadable image", 422);
           }
+          if (field === "evidenceUrl" && !localized.mediaType?.startsWith("video/")) {
+            throw new AppError("reference_video_required", "The supplied reference must be a downloadable video", 422);
+          }
           localAssets[field] = localized;
         }
       }
@@ -776,6 +946,7 @@ export class HypitAdapter {
     let runPath = resolve(projectDir, workflow.run);
     let workspace = resolve(this.rootDir, workflow.workspace ?? workflow.projectDir);
     if (workflow.compiler === "commission-v1") {
+      await assertProductionMaySpend(jobDir, { orderId: order.id, spendAllowed: this.spendAllowed });
       const referenceAdaptation = await this.#prepareReferenceAdaptation({
         workflow, jobDir, order, quote, commissionPath,
       });
@@ -900,6 +1071,7 @@ export class HypitAdapter {
     }
     const directory = join(jobDir, "reference-adaptation");
     const recordPath = join(directory, "plan.json");
+    const attemptPath = join(directory, "plan.attempt.json");
     await mkdir(directory, { recursive: true, mode: 0o700 });
     if (await exists(recordPath)) {
       const recordBytes = await readFile(recordPath);
@@ -962,39 +1134,50 @@ export class HypitAdapter {
       boundaryCandidates: boundaries.candidates ?? [],
       directory: join(directory, "vision-inputs"),
     });
-    const generated = await this.referenceVisionProvider.generate({
-      durationSeconds: analysisDurationSeconds,
-      boundaryTimes: (boundaries.candidates ?? []).map((item) => item.at),
-      productImage: prepared.productImage,
-      referenceFrames: prepared.referenceFrames,
-    });
-    const record = {
-      format: REFERENCE_VISION_PLAN_FORMAT,
-      orderId: order.id,
-      productId: quote.product.id,
-      commissionSha256,
-      createdAt: new Date().toISOString(),
-      inputs: { productSha256: image.sha256, referenceSha256: video.sha256 },
-      source: {
-        durationSeconds: sourceDurationSeconds,
-        width: Number(probe.width) || null,
-        height: Number(probe.height) || null,
-        frameRate: Number(probe.frameRate) || null,
-        boundaryTimes: (boundaries.candidates ?? []).map((item) => Number(item.at)).filter(Number.isFinite),
+    return await callSellerProviderTwice({
+      path: attemptPath,
+      identity: {
+        format: "seller.reference-analysis-attempt@1", orderId: order.id, commissionSha256,
+        productSha256: image.sha256, referenceSha256: video.sha256,
       },
-      sampling: prepared.referenceFrames.map((frame) => frame.at),
-      provider: generated.provider,
-      model: generated.model,
-      usage: generated.usage,
-      plan: generated.plan,
-    };
-    const recordBytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
-    await writeFile(recordPath, recordBytes, { mode: 0o600, flag: "wx" });
-    return {
-      ...record,
-      manifestPath: recordPath,
-      manifestSha256: createHash("sha256").update(recordBytes).digest("hex"),
-    };
+      uncertainCode: "reference_adaptation_submission_uncertain",
+      beforeCall: () => assertProductionMaySpend(jobDir, { orderId: order.id, spendAllowed: this.spendAllowed }),
+      call: () => this.referenceVisionProvider.generate({
+        durationSeconds: analysisDurationSeconds,
+        boundaryTimes: (boundaries.candidates ?? []).map((item) => item.at),
+        productImage: prepared.productImage,
+        referenceFrames: prepared.referenceFrames,
+      }),
+      finalize: async (generated) => {
+        const record = {
+          format: REFERENCE_VISION_PLAN_FORMAT,
+          orderId: order.id,
+          productId: quote.product.id,
+          commissionSha256,
+          createdAt: new Date().toISOString(),
+          inputs: { productSha256: image.sha256, referenceSha256: video.sha256 },
+          source: {
+            durationSeconds: sourceDurationSeconds,
+            width: Number(probe.width) || null,
+            height: Number(probe.height) || null,
+            frameRate: Number(probe.frameRate) || null,
+            boundaryTimes: (boundaries.candidates ?? []).map((item) => Number(item.at)).filter(Number.isFinite),
+          },
+          sampling: prepared.referenceFrames.map((frame) => frame.at),
+          provider: generated.provider,
+          model: generated.model,
+          usage: generated.usage,
+          plan: generated.plan,
+        };
+        const recordBytes = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
+        await writeFile(recordPath, recordBytes, { mode: 0o600, flag: "wx" });
+        return {
+          ...record,
+          manifestPath: recordPath,
+          manifestSha256: createHash("sha256").update(recordBytes).digest("hex"),
+        };
+      },
+    });
   }
 
   async #workflows() {

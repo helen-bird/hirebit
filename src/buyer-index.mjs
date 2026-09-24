@@ -19,8 +19,15 @@ const dataDir = resolve(rootDir, process.env.BUYER_DATA_DIR ?? ".buyer");
 const processLock = await acquireProcessLock(resolve(dataDir, "buyer-process.lock"));
 const policyFile = resolve(rootDir, process.env.BUYER_POLICY_FILE ?? "config/buyer-policy.json");
 const policy = JSON.parse(await readFile(policyFile, "utf8"));
+const maxPaymentFeeSats = Number(policy.maxPaymentFeeSats ?? 0);
+if (!Number.isSafeInteger(maxPaymentFeeSats) || maxPaymentFeeSats < 0) {
+  throw new Error("maxPaymentFeeSats must be a non-negative integer");
+}
 const paymentMode = process.env.PAYMENT_MODE ?? "gobtcpay";
 if (!new Set(["gobtcpay", "demo"]).has(paymentMode)) throw new Error(`Unsupported PAYMENT_MODE: ${paymentMode}`);
+// Both rails quote the same all-in customer ceiling. Demo simulates the fee;
+// mainnet validates the actual PSBT fee before signing.
+const paymentFeeReserveSats = maxPaymentFeeSats;
 const publicDemoEnabled = process.env.PUBLIC_DEMO_MODE === "1";
 if (paymentMode === "gobtcpay" && !/^(02|03)[a-fA-F0-9]{64}$/.test(process.env.GOBTCPAY_PAYER_PUBLIC_KEY ?? "")) {
   throw new Error("GOBTCPAY_PAYER_PUBLIC_KEY must be the registered compressed payer public key");
@@ -49,13 +56,14 @@ const seller = new SellerClient({
 const wallet = paymentMode === "demo"
   ? new DemoInstantWalletClient({
     authorizePayment: (paymentId) => seller.authorizeDemoPayment(paymentId),
+    feeSats: paymentFeeReserveSats,
   })
   : new InstantWalletClient({
     baseUrl: process.env.GOBTCPAY_BASE_URL ?? "https://api.gobtcpay.com/public/api/v1.2",
     keyFile: resolve(rootDir, process.env.GOBTCPAY_PAYER_KEY_FILE ?? ".gobtcpay/payer-key.pem"),
     expectedPublicKeyHex: process.env.GOBTCPAY_PAYER_PUBLIC_KEY,
     multisigAddress: process.env.GOBTCPAY_BUYER_MULTISIG_ADDRESS,
-    maxFeeSats: policy.maxPaymentFeeSats,
+    maxFeeSats: maxPaymentFeeSats,
     maxFeeRateSatVb: policy.maxFeeRateSatVb,
   });
 const store = new JsonStore(resolve(dataDir, process.env.BUYER_STATE_FILE ?? "state.json"), {
@@ -66,7 +74,6 @@ const creativeAdvisor = new DeepSeekCreativeAdvisor({
   baseUrl: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
   model: process.env.DEEPSEEK_MODEL ?? "deepseek-flash",
 });
-const paymentFeeReserveSats = paymentMode === "demo" ? 0 : policy.maxPaymentFeeSats;
 const decisionEngine = new DecisionEngine({ seller, policy, advisor: creativeAdvisor, paymentFeeReserveSats });
 const completer = new CampaignCompletionService({ seller, dataDir, advisor: creativeAdvisor });
 const service = new BuyerService({

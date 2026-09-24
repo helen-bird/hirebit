@@ -32,20 +32,21 @@ test("public Demo enforces a small request boundary before model use", () => {
   );
 });
 
-test("public Demo quota counts only non-declined work from the rolling hour", () => {
+test("public Demo quota retains declined and cancelled work in the rolling hour", () => {
   const now = Date.parse("2026-09-21T12:00:00.000Z");
   const quota = publicDemoQuotaStatus([
     { state: "completed", createdAt: "2026-09-21T11:30:00.000Z" },
     { state: "clarification_required", createdAt: "2026-09-21T11:45:00.000Z" },
     { state: "declined", createdAt: "2026-09-21T11:50:00.000Z" },
+    { state: "cancelled", createdAt: "2026-09-21T11:55:00.000Z" },
     { state: "completed", createdAt: "2026-09-21T10:59:59.000Z" },
   ], { maxDelegations: 3, now });
   assert.deepEqual(quota, {
-    used: 2,
+    used: 4,
     limit: 3,
-    available: 1,
-    exhausted: false,
-    retryAt: null,
+    available: 0,
+    exhausted: true,
+    retryAt: "2026-09-21T12:30:00.000Z",
   });
 });
 

@@ -21,9 +21,10 @@ function txids(transactions) {
 }
 
 function paymentView(payment) {
-  const chainTxids = txids(payment.transactions);
   const simulated = payment.simulated === true;
-  return {
+  const chainTxids = simulated ? [] : txids(payment.transactions);
+  const paidAt = simulated ? null : (payment.paidAt ?? null);
+  const view = {
     id: payment.paymentId,
     status: payment.status,
     amountSats: String(payment.amountSats),
@@ -32,14 +33,27 @@ function paymentView(payment) {
     qrString: payment.qrString,
     expiresAt: payment.expiresAt,
     authorization: payment.status === "paid" ? "authorized" : "pending",
-    settlement: payment.paidAt != null && chainTxids.length > 0 ? "settled" : "pending",
-    paidAt: payment.paidAt ?? null,
+    settlement: payment.status === "paid" && paidAt != null && chainTxids.length > 0 ? "settled" : "pending",
+    paidAt,
     txids: chainTxids,
     mode: simulated ? "demo_simulated" : (payment.mode ?? "gobtcpay_mainnet"),
     simulated,
     network: simulated ? "simulation" : "bitcoin-mainnet",
     disclosure: simulated ? (payment.disclosure ?? "DEMO ONLY — no Bitcoin transfer.") : null,
   };
+  // payment/get may omit invoice fields that payment/create returned. An
+  // omitted field must never erase the original recipient or expiry.
+  return Object.fromEntries(Object.entries(view).filter(([, value]) => value !== undefined));
+}
+
+function assertPaymentIdentity(payment, order) {
+  if (payment?.paymentId !== order.payment.id
+    || String(payment.amountSats) !== String(order.amountSats)
+    || (payment.simulated === true) !== (order.payment.simulated === true)
+    || (payment.btcAddress !== undefined && payment.btcAddress !== order.payment.btcAddress)
+    || (payment.externalId !== undefined && payment.externalId !== order.externalId)) {
+    throw new AppError("payment_reconciliation_mismatch", "Payment response does not match the Seller order", 502);
+  }
 }
 
 function publicOrder(order) {
@@ -54,6 +68,7 @@ export class SellerService {
     clock = Date.now,
     quoteTtlMs = 30 * 60 * 1000,
     maxConcurrentProductions = 1,
+    maxSponsoredNetworkFeeSats = 500,
   }) {
     this.store = store;
     this.payments = payments;
@@ -61,6 +76,10 @@ export class SellerService {
     this.clock = clock;
     this.quoteTtlMs = quoteTtlMs;
     this.maxConcurrentProductions = Math.max(1, maxConcurrentProductions);
+    if (!Number.isSafeInteger(maxSponsoredNetworkFeeSats) || maxSponsoredNetworkFeeSats < 0) {
+      throw new TypeError("maxSponsoredNetworkFeeSats must be a non-negative integer");
+    }
+    this.maxSponsoredNetworkFeeSats = maxSponsoredNetworkFeeSats;
     this.paymentTasks = new Map();
     this.productionTasks = new Map();
     this.pollTimer = undefined;
@@ -103,10 +122,24 @@ export class SellerService {
     }
     const calculated = calculateQuote(input);
     const maxProviderCostSats = production.workflowEconomics?.[input.productId]?.maxProviderCostSats;
-    if (Number.isSafeInteger(maxProviderCostSats) && calculated.amountSats <= maxProviderCostSats) {
+    const requestedFeeSats = input?.sellerFeeAllowanceSats ?? 0;
+    if (!Number.isSafeInteger(requestedFeeSats) || requestedFeeSats < 0
+      || requestedFeeSats > this.maxSponsoredNetworkFeeSats) {
+      throw new AppError("invalid_fee_allowance", "Seller-paid network-fee allowance exceeds the configured limit", 400);
+    }
+    // The invoice is lower than the displayed all-in price. A conservative
+    // allowance cannot create a dust-sized invoice or erase the Seller margin.
+    const marginAllowance = Number.isSafeInteger(maxProviderCostSats)
+      ? calculated.amountSats - maxProviderCostSats - 1 : requestedFeeSats;
+    const sellerFeeAllowanceSats = Math.min(requestedFeeSats, calculated.amountSats - 546, marginAllowance);
+    if (sellerFeeAllowanceSats < 0) {
+      throw new AppError("unprofitable_quote", "No valid invoice amount remains after provider costs", 503);
+    }
+    const invoiceAmountSats = calculated.amountSats - sellerFeeAllowanceSats;
+    if (Number.isSafeInteger(maxProviderCostSats) && invoiceAmountSats <= maxProviderCostSats) {
       throw new AppError("unprofitable_quote", "Configured provider cost ceiling leaves no positive gross margin", 503, {
         productId: input.productId,
-        amountSats: calculated.amountSats,
+        amountSats: invoiceAmountSats,
         maxProviderCostSats,
       });
     }
@@ -115,9 +148,16 @@ export class SellerService {
       createdAt: nowIso(this.clock),
       expiresAt: new Date(this.clock() + this.quoteTtlMs).toISOString(),
       ...calculated,
+      customerPriceSats: calculated.amountSats,
+      sellerFeeAllowanceSats,
+      amountSats: invoiceAmountSats,
+      lineItems: sellerFeeAllowanceSats === 0 ? calculated.lineItems : [
+        ...calculated.lineItems,
+        { code: "seller_network_fee_allowance", label: "Seller-paid network fee allowance", amountSats: -sellerFeeAllowanceSats },
+      ],
       economics: Number.isSafeInteger(maxProviderCostSats) ? {
         maxProviderCostSats,
-        minimumGrossMarginSats: calculated.amountSats - maxProviderCostSats,
+        minimumGrossMarginSats: invoiceAmountSats - maxProviderCostSats,
       } : null,
     };
     await this.store.transaction((state) => {
@@ -189,6 +229,50 @@ export class SellerService {
     return state.audit.filter((item) => item.orderId === orderId);
   }
 
+  async requestCancellation(orderId, reason = "buyer_request") {
+    const { order, signalProducer } = await this.store.transaction((state) => {
+      const current = state.orders[orderId];
+      if (current === undefined) throw new AppError("order_not_found", "Order not found", 404);
+      if (current.cancellation?.state) return { order: current, signalProducer: false };
+      const started = ["producing", "completed", "failed"].includes(current.production.state);
+      const signalProducer = current.production.state === "producing";
+      current.cancellation = {
+        state: started ? "cost_review_required" : "stop_requested",
+        reason,
+        requestedAt: nowIso(this.clock),
+        costCutoffAt: started ? nowIso(this.clock) : null,
+        productionStartedAt: current.production.startedAt ?? null,
+        refund: { state: "not_issued", amountSats: null, networkFeeRefundable: false },
+      };
+      if (!started) {
+        current.production.state = "stopped";
+        current.state = "cancellation_pending";
+      } else {
+        current.state = "cost_review_required";
+      }
+      current.updatedAt = nowIso(this.clock);
+      audit(state, this.clock, "order.cancellation_requested", orderId, {
+        productionStarted: started,
+        paymentAuthorization: current.payment?.authorization ?? "unknown",
+      });
+      return { order: current, signalProducer };
+    });
+    if (signalProducer && typeof this.producer.requestCancellation === "function") {
+      try {
+        await this.producer.requestCancellation(orderId);
+      } catch (error) {
+        // The stop signal is best effort. The durable cancellation request and
+        // cost cutoff remain authoritative even if the provider is unavailable.
+        await this.store.transaction((state) => {
+          audit(state, this.clock, "production.stop_signal_failed", orderId, { code: error.code ?? "producer_unavailable" });
+        });
+      }
+    }
+    // A request is not proof that an invoice is unpaid or that BTC was refunded.
+    if (order.payment !== null) return await this.syncOrder(orderId);
+    return this.getOrder(orderId);
+  }
+
   async authorizeDemoPayment(paymentId) {
     const readiness = this.payments.readiness?.() ?? {};
     if (readiness.simulated !== true || typeof this.payments.authorizePayment !== "function") {
@@ -207,7 +291,7 @@ export class SellerService {
     });
     return {
       instantReceiptId: payment.simulationReceiptId,
-      submittedAt: payment.paidAt ?? nowIso(this.clock),
+      submittedAt: payment.simulatedAuthorizedAt ?? nowIso(this.clock),
       mode: "demo_simulated",
       simulated: true,
       mainnet: false,
@@ -219,27 +303,62 @@ export class SellerService {
     let order = this.getOrder(orderId);
     if (order.payment === null) order = await this.#ensurePayment(orderId);
     const remote = await this.payments.getPayment(order.payment.id);
+    assertPaymentIdentity(remote, order);
     const view = paymentView(remote);
+    if (order.payment.authorization === "authorized" && view.authorization !== "authorized") {
+      throw new AppError("payment_status_regressed", "Previously authorized payment needs manual reconciliation", 502);
+    }
+    if (order.payment.settlement === "settled" && view.settlement !== "settled") {
+      throw new AppError("payment_settlement_regressed", "Previously settled payment needs manual reconciliation", 502);
+    }
     const expiry = Number(order.payment.expiresAt);
     const expiryMs = Number.isFinite(expiry) ? (expiry < 10_000_000_000 ? expiry * 1000 : expiry) : Date.parse(order.payment.expiresAt);
-    if (view.status === "initiated" && Number.isFinite(expiryMs) && expiryMs <= this.clock()) {
-      view.status = "expired";
-    }
+    // The invoice deadline is not a provider-confirmed terminal payment result.
+    view.expiredLocally = view.status === "initiated" && Number.isFinite(expiryMs) && expiryMs <= this.clock();
     order = await this.store.transaction((state) => {
       const current = state.orders[orderId];
+      assertPaymentIdentity(remote, current);
+      // The provider request ran outside this transaction. A newer poll may
+      // already have committed authorization or settlement while it was in flight.
+      if (current.payment?.authorization === "authorized" && view.authorization !== "authorized") {
+        throw new AppError("payment_status_regressed", "Previously authorized payment needs manual reconciliation", 502);
+      }
+      if (current.payment?.settlement === "settled" && view.settlement !== "settled") {
+        throw new AppError("payment_settlement_regressed", "Previously settled payment needs manual reconciliation", 502);
+      }
       const wasAuthorized = current.payment?.authorization === "authorized";
       const changed = current.payment?.status !== view.status || current.payment?.settlement !== view.settlement;
       current.payment = { ...current.payment, ...view, lastCheckedAt: nowIso(this.clock) };
       current.payment.pollAttempts = changed ? 0 : Number(current.payment.pollAttempts ?? 0) + 1;
       const terminalUnpaid = ["expired", "cancelled", "canceled", "failed", "rejected"].includes(view.status);
-      current.payment.nextCheckAt = terminalUnpaid || view.settlement === "settled"
+      const watchCancelled = terminalUnpaid && ["stop_requested", "cancelled_unpaid"].includes(current.cancellation?.state)
+        && this.clock() < Date.parse(current.cancellation.requestedAt) + 7 * 24 * 60 * 60 * 1000;
+      current.payment.nextCheckAt = (terminalUnpaid && !watchCancelled) || view.settlement === "settled"
         ? null
-        : new Date(this.clock() + Math.min(300_000, 5_000 * (2 ** Math.min(current.payment.pollAttempts, 6)))).toISOString();
+        : new Date(this.clock() + (watchCancelled ? 60 * 60 * 1000
+          : Math.min(300_000, 5_000 * (2 ** Math.min(current.payment.pollAttempts, 6))))).toISOString();
       current.updatedAt = nowIso(this.clock);
-      if (terminalUnpaid && !wasAuthorized) current.state = "payment_expired";
+      if (terminalUnpaid && !wasAuthorized) {
+        current.state = current.cancellation?.state === "stop_requested" ? "cancelled_unpaid" : "payment_expired";
+        if (current.cancellation?.state === "stop_requested") current.cancellation.state = "cancelled_unpaid";
+      }
       if (view.authorization === "authorized" && !wasAuthorized) {
-        current.state = "paid";
-        current.production.state = "queued";
+        if (current.cancellation?.state === "stop_requested" || current.cancellation?.state === "cancelled_unpaid") {
+          current.cancellation.state = "refund_review_required";
+          current.cancellation.refund = {
+            state: "not_issued",
+            amountSats: current.amountSats,
+            networkFeeRefundable: false,
+            reason: "stopped_before_production",
+          };
+          current.state = "refund_review_required";
+          current.production.state = "stopped";
+        } else if (current.cancellation?.state === "cost_review_required") {
+          current.state = "cost_review_required";
+        } else {
+          current.state = "paid";
+          current.production.state = "queued";
+        }
         audit(state, this.clock, "payment.authorized", orderId, {
           paymentId: view.id,
           unlockSignal: "status=paid",
@@ -249,6 +368,14 @@ export class SellerService {
       if (view.settlement === "settled" && current.payment.settlementRecorded !== true) {
         current.payment.settlementRecorded = true;
         audit(state, this.clock, "payment.settled", orderId, { txids: view.txids, paidAt: view.paidAt });
+      }
+      if (current.cancellation?.state === "stop_requested" && view.authorization === "authorized") {
+        current.cancellation.state = "refund_review_required";
+        current.cancellation.refund = {
+          state: "not_issued", amountSats: current.amountSats,
+          networkFeeRefundable: false, reason: "stopped_before_production",
+        };
+        current.state = "refund_review_required";
       }
       return current;
     });
@@ -263,11 +390,32 @@ export class SellerService {
     await this.store.transaction((state) => {
       const order = state.orders[orderId];
       if (order === undefined) throw new AppError("order_not_found", "Order not found", 404);
+      if (order.cancellation?.state) throw new AppError("cancellation_pending", "Production cannot restart during cancellation review", 409);
       if (order.payment?.authorization !== "authorized") {
         throw new AppError("payment_not_authorized", "Production remains locked until status is paid", 409);
       }
+      if (order.production.state === "producing" && order.production.buildId) return;
       if (order.production.state !== "failed") {
         throw new AppError("production_not_failed", "Only failed production can be retried", 409);
+      }
+      if (!order.production.buildId && [
+        "production_recovery_missing_build",
+        "production_submission_invalid",
+        "hypit_build_submission_failed",
+        "hypit_build_submission_uncertain",
+        "hypit_timeout",
+        "hypit_command_failed",
+      ].includes(order.production.error?.code)) {
+        throw new AppError(
+          "production_reconciliation_required",
+          "The previous Hypit submission may still be running; reconcile it before starting another Build",
+          409,
+        );
+      }
+      // Only a confirmed terminal build failure permits a new build. Other
+      // errors may have occurred after submission, so the existing ID wins.
+      if (order.production.error?.code === "hypit_build_incomplete") {
+        order.production.buildId = null;
       }
       order.production.state = "queued";
       order.production.error = null;
@@ -307,6 +455,8 @@ export class SellerService {
         ))
         .filter((order) => order.payment === null
           || !["expired", "cancelled", "canceled", "failed", "rejected"].includes(order.payment.status)
+          || (order.cancellation?.state === "cancelled_unpaid"
+            && this.clock() < Date.parse(order.cancellation.requestedAt) + 7 * 24 * 60 * 60 * 1000)
           || ["queued", "producing"].includes(order.production.state))
         .filter((order) => order.payment?.nextCheckAt == null
           || Date.parse(order.payment.nextCheckAt) <= this.clock()
@@ -340,10 +490,16 @@ export class SellerService {
           description: `${quote.product.name} · ${order.id}`,
           externalId: order.externalId,
         });
+        if (typeof created?.paymentId !== "string" || created.paymentId === ""
+          || String(created.amountSats) !== String(order.amountSats)
+          || typeof created.btcAddress !== "string" || !created.btcAddress.startsWith("bc1")
+          || (created.externalId !== undefined && created.externalId !== order.externalId)) {
+          throw new AppError("payment_creation_mismatch", "Created payment does not match the Seller order", 502);
+        }
         return await this.store.transaction((draft) => {
           const current = draft.orders[orderId];
           current.payment = { ...paymentView(created), lastCheckedAt: nowIso(this.clock), settlementRecorded: false };
-          current.state = "awaiting_payment";
+          if (current.cancellation?.state !== "stop_requested") current.state = "awaiting_payment";
           current.updatedAt = nowIso(this.clock);
           audit(draft, this.clock, "payment.created", orderId, {
             paymentId: current.payment.id,
@@ -352,20 +508,9 @@ export class SellerService {
           return current;
         });
       } catch (error) {
-        if (error.code === "hypit_build_still_running") {
-          await this.store.transaction((draft) => {
-            const current = draft.orders[orderId];
-            current.state = "fulfilling";
-            current.production.state = "producing";
-            current.production.error = { code: error.code, message: error.message, transient: true };
-            current.updatedAt = nowIso(this.clock);
-            audit(draft, this.clock, "production.still_running", orderId, { buildId: current.production.buildId });
-          });
-          return;
-        }
         await this.store.transaction((draft) => {
           const current = draft.orders[orderId];
-          current.state = "payment_creation_failed";
+          if (!current.cancellation?.state) current.state = "payment_creation_failed";
           current.updatedAt = nowIso(this.clock);
           current.lastError = { code: error.code ?? "payment_error", message: error.message, at: nowIso(this.clock) };
           audit(draft, this.clock, "payment.create_failed", orderId, current.lastError);
@@ -384,12 +529,18 @@ export class SellerService {
     const task = (async () => {
       const claim = await this.store.transaction((state) => {
         const order = state.orders[orderId];
+        // A resumed build can incur more provider work; do not restart it after a stop request.
+        if (order.cancellation?.state) return null;
         if (!['queued', 'producing'].includes(order.production.state)) return null;
         if (order.payment?.authorization !== "authorized") {
           throw new AppError("payment_not_authorized", "Production remains locked until status is paid", 409);
         }
-        if (order.production.state === "producing") {
+        if (order.production.state === "producing" || order.production.buildId) {
           if (typeof order.production.buildId !== "string" || order.production.buildId === "") {
+            if (typeof this.producer.recoverUnsubmitted === "function") {
+              audit(state, this.clock, "production.prebuild_recovery", orderId);
+              return { mode: "recover_prebuild", buildId: null };
+            }
             order.state = "fulfillment_failed";
             order.production.state = "failed";
             order.production.failedAt = nowIso(this.clock);
@@ -428,7 +579,10 @@ export class SellerService {
             quote: structuredClone(quote),
           });
         } else if (typeof this.producer.start === "function" && typeof this.producer.resume === "function") {
-          const submission = await this.producer.start({ order: publicOrder(order), quote: structuredClone(quote) });
+          const submit = claim.mode === "recover_prebuild"
+            ? this.producer.recoverUnsubmitted.bind(this.producer)
+            : this.producer.start.bind(this.producer);
+          const submission = await submit({ order: publicOrder(order), quote: structuredClone(quote) });
           if (typeof submission?.buildId !== "string" || submission.buildId === "") {
             throw new AppError("production_submission_invalid", "Producer did not return a durable build id", 502);
           }
@@ -449,7 +603,7 @@ export class SellerService {
         }
         await this.store.transaction((draft) => {
           const current = draft.orders[orderId];
-          current.state = "completed";
+          if (!current.cancellation?.state) current.state = "completed";
           current.production.state = "completed";
           current.production.completedAt = nowIso(this.clock);
           current.production.result = result;
@@ -462,9 +616,20 @@ export class SellerService {
           });
         });
       } catch (error) {
+        if (error.code === "hypit_build_still_running") {
+          await this.store.transaction((draft) => {
+            const current = draft.orders[orderId];
+            if (!current.cancellation?.state) current.state = "fulfilling";
+            current.production.state = "producing";
+            current.production.error = { code: error.code, message: error.message, transient: true };
+            current.updatedAt = nowIso(this.clock);
+            audit(draft, this.clock, "production.still_running", orderId, { buildId: current.production.buildId });
+          });
+          return;
+        }
         await this.store.transaction((draft) => {
           const current = draft.orders[orderId];
-          current.state = "fulfillment_failed";
+          if (!current.cancellation?.state) current.state = "fulfillment_failed";
           current.production.state = "failed";
           current.production.failedAt = nowIso(this.clock);
           current.production.error = { code: error.code ?? "production_error", message: error.message };

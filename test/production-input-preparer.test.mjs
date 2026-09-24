@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,7 @@ import {
   GoogleCloudTtsVoiceProvider,
   ProductionInputPreparer,
 } from "../src/production-input-preparer.mjs";
+import { markProductionCancellation } from "../src/production-cancellation.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const voiceFixture = join(rootDir, "productions/ranking-listicle/assets/narration.wav");
@@ -107,6 +109,95 @@ test("production inputs generate once per hook-language and remain stable across
   const firstAudio = join(input.jobDir, "production-inputs", manifest.variants[0].audio[0].file);
   await writeFile(firstAudio, "tampered");
   await assert.rejects(preparer.prepare(input), (error) => error.code === "production_input_digest_mismatch");
+});
+
+test("seller absorbs at most one duplicate voice request after an ambiguous failure", async () => {
+  const input = await commissionFixture();
+  let calls = 0;
+  const preparer = new ProductionInputPreparer({
+    copyProvider: { async generate(request) { return { provider: "fake-copy", value: copyValue(request) }; } },
+    voiceProvider: {
+      provider: "fake-voice",
+      async synthesize() { calls += 1; throw new Error("connection closed after submission"); },
+    },
+  });
+  await assert.rejects(preparer.prepare(input), (error) => error.code === "production_voice_submission_uncertain");
+  await assert.rejects(preparer.prepare(input), (error) => error.code === "production_voice_submission_uncertain");
+  assert.equal(calls, 2);
+  const marker = JSON.parse(await readFile(join(input.jobDir, "production-inputs", "audio", "h1-en-us-1-host_a.attempt.json.retry-2.json"), "utf8"));
+  assert.equal(marker.attempt, 2);
+});
+
+test("seller absorbs at most one duplicate copy request after an ambiguous failure", async () => {
+  const input = await commissionFixture();
+  let calls = 0;
+  const preparer = new ProductionInputPreparer({
+    copyProvider: {
+      async generate() { calls += 1; throw new Error("connection closed after copy submission"); },
+    },
+    voiceProvider: { provider: "fake-voice", async synthesize() { throw new Error("voice must not start"); } },
+  });
+  await assert.rejects(preparer.prepare(input), (error) => error.code === "production_copy_submission_uncertain");
+  const attempt = JSON.parse(await readFile(join(input.jobDir, "production-inputs", "copy.attempt.json"), "utf8"));
+  assert.equal(attempt.orderId, input.order.id);
+  await assert.rejects(preparer.prepare(input), (error) => error.code === "production_copy_submission_uncertain");
+  assert.equal(calls, 2);
+});
+
+test("a restarted Seller resumes one remaining copy attempt without charging Buyer", async () => {
+  const input = await commissionFixture();
+  const path = join(input.jobDir, "production-inputs", "copy.attempt.json");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify({
+    format: "seller.copy-attempt@1", orderId: input.order.id,
+    commissionSha256: createHash("sha256").update(await readFile(input.commissionPath)).digest("hex"),
+    startedAt: new Date().toISOString(),
+  })}\n`);
+  let copyCalls = 0;
+  const preparer = new ProductionInputPreparer({
+    copyProvider: { async generate(request) {
+      copyCalls += 1;
+      return { provider: "fake-copy", value: copyValue(request) };
+    } },
+    voiceProvider: {
+      provider: "fake-voice", async synthesize(request) {
+        await copyFile(voiceFixture, request.destination);
+        return { provider: "fake-voice", commercialUseApproved: true, requirementsApplied: true };
+      },
+    },
+  });
+  const manifest = await preparer.prepare(input);
+  assert.equal(manifest.orderId, input.order.id);
+  assert.equal(copyCalls, 1);
+  const retry = JSON.parse(await readFile(`${path}.retry-2.json`, "utf8"));
+  assert.equal(retry.attempt, 2);
+});
+
+test("cancellation prevents a new paid voice request", async () => {
+  const input = await commissionFixture();
+  let calls = 0;
+  await markProductionCancellation(input.jobDir, input.order.id);
+  const preparer = new ProductionInputPreparer({
+    copyProvider: { async generate(request) { return { provider: "fake-copy", value: copyValue(request) }; } },
+    voiceProvider: { provider: "fake-voice", async synthesize() { calls += 1; } },
+  });
+  await assert.rejects(preparer.prepare(input), (error) => error.code === "production_cancelled_before_billable_step");
+  assert.equal(calls, 0);
+});
+
+test("durable Seller cancellation blocks paid copy before the stop marker is written", async () => {
+  const input = await commissionFixture();
+  let copyCalls = 0;
+  const preparer = new ProductionInputPreparer({
+    spendAllowed: async (orderId) => {
+      assert.equal(orderId, input.order.id);
+      return false;
+    },
+    copyProvider: { async generate() { copyCalls += 1; throw new Error("unexpected copy call"); } },
+    voiceProvider: { provider: "fake-voice", async synthesize() { throw new Error("unexpected voice call"); } },
+  });
+  await assert.rejects(preparer.prepare(input), (error) => error.code === "production_cancelled_before_billable_step");
+  assert.equal(copyCalls, 0);
 });
 
 test("DeepSeek production copy request contains only the explicitly sanitized production input", async () => {

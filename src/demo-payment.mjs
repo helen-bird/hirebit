@@ -18,7 +18,17 @@ function identifier(prefix, value) {
 }
 
 function publicPayment(payment) {
-  return structuredClone(payment);
+  const result = structuredClone(payment);
+  if (result.simulated === true) {
+    // Older demo records used paidAt for the simulated acceptance time. Keep
+    // that timestamp as demo evidence, never as on-chain settlement evidence.
+    if (result.status === "paid") {
+      result.simulatedAuthorizedAt ??= result.paidAt ?? null;
+    }
+    result.paidAt = null;
+    result.transactions = [];
+  }
+  return result;
 }
 
 export class DemoPaymentClient {
@@ -66,6 +76,7 @@ export class DemoPaymentClient {
         expiresAt: Math.floor((this.clock() + (30 * 60 * 1000)) / 1000),
         transactions: [],
         paidAt: null,
+        simulatedAuthorizedAt: null,
         mode: "demo_simulated",
         simulated: true,
         simulationReceiptId: null,
@@ -90,8 +101,12 @@ export class DemoPaymentClient {
       if (payment.status !== "initiated") {
         throw new AppError("demo_payment_not_authorizable", "Demo payment is not awaiting authorization", 409);
       }
+      if (Number(payment.expiresAt) * 1000 <= this.clock()) {
+        throw new AppError("demo_payment_expired", "Demo payment has expired", 409);
+      }
       payment.status = "paid";
-      payment.paidAt = nowIso(this.clock);
+      payment.simulatedAuthorizedAt = nowIso(this.clock);
+      payment.paidAt = null;
       payment.simulationReceiptId = identifier("demo_receipt", paymentId);
       payment.transactions = [];
       return publicPayment(payment);
@@ -100,9 +115,13 @@ export class DemoPaymentClient {
 }
 
 export class DemoInstantWalletClient {
-  constructor({ authorizePayment, clock = Date.now }) {
+  constructor({ authorizePayment, feeSats = 0, clock = Date.now }) {
     if (typeof authorizePayment !== "function") throw new TypeError("authorizePayment must be a function");
+    if (!Number.isSafeInteger(feeSats) || feeSats < 0) {
+      throw new TypeError("feeSats must be a non-negative integer");
+    }
     this.authorizePayment = authorizePayment;
+    this.feeSats = feeSats;
     this.clock = clock;
   }
 
@@ -115,12 +134,13 @@ export class DemoInstantWalletClient {
       payerKeyConfigured: false,
       walletRegistration: "simulated",
       multisigAddress: null,
+      simulatedFeeSats: this.feeSats,
       disclosure: "No private key, PSBT, Bitcoin balance, or GoBTC API is used.",
       externalBlocker: "gobtcpay_http_503",
     };
   }
 
-  async preparePayment({ paymentId, amountSats, recipientAddress }) {
+  async preparePayment({ paymentId, amountSats, recipientAddress, maxFeeSats = this.feeSats }) {
     if (typeof paymentId !== "string" || !paymentId.startsWith("demo_pay_")) {
       throw new AppError("invalid_demo_payment", "Demo wallet accepts only demo payment IDs");
     }
@@ -130,6 +150,10 @@ export class DemoInstantWalletClient {
     if (recipientAddress !== DEMO_RECIPIENT) {
       throw new AppError("invalid_demo_payment", "Demo payment recipient does not match the non-payable demo marker");
     }
+    if (!Number.isSafeInteger(maxFeeSats) || maxFeeSats < 0 || maxFeeSats > this.feeSats) {
+      throw new AppError("invalid_demo_payment", "Demo fee allowance is invalid");
+    }
+    const simulatedFeeSats = maxFeeSats;
     const jobId = identifier("demo_job", paymentId);
     const signedPsbtBase64 = Buffer.from(`DEMO-NOT-A-PSBT:${paymentId}:${amountSats}`, "utf8").toString("base64");
     return {
@@ -140,14 +164,16 @@ export class DemoInstantWalletClient {
         mode: "demo_simulated",
         simulated: true,
         amountSats,
-        feeSats: 0,
-        disclosure: "No PSBT was created or signed.",
+        feeSats: simulatedFeeSats,
+        feeBasis: "simulated_policy_reserve",
+        disclosure: "No PSBT was created or signed; the fee is a simulated policy amount.",
       },
       validation: {
         recipientAddress,
         amountSats,
-        feeSats: 0,
-        feeRateSatVb: 0,
+        feeSats: simulatedFeeSats,
+        feeRateSatVb: null,
+        feeBasis: "simulated_policy_reserve",
         changeSats: 0,
         inputCount: 0,
         outputCount: 0,

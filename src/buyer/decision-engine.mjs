@@ -76,9 +76,10 @@ function qualityScore(product, request, hookVariants) {
   return Math.min(score, 1);
 }
 
-function quoteRequest(request, productId, hookVariants) {
+function quoteRequest(request, productId, hookVariants, sellerFeeAllowanceSats = 0) {
   return {
     productId,
+    sellerFeeAllowanceSats,
     productionMode: request.productionMode ?? "original",
     brief: { ...(request.brief ?? {}), objective: request.objective },
     addOns: {
@@ -114,7 +115,7 @@ function summarizeProducts(plans) {
   }).sort((left, right) => (right.score ?? -1) - (left.score ?? -1));
 }
 
-function tradeoffSummary(plans, selected, request, feeReserveSats) {
+function tradeoffSummary(plans, selected, request) {
   const eligible = plans.filter((plan) => plan.eligible);
   const sameProduct = plans.filter((plan) => plan.productId === selected.productId && plan.quote !== null);
   const cheaper = eligible
@@ -123,7 +124,7 @@ function tradeoffSummary(plans, selected, request, feeReserveSats) {
   const broader = sameProduct
     .filter((plan) => plan.quote.addOns.hookVariants > selected.quote.addOns.hookVariants)
     .sort((left, right) => left.quote.addOns.hookVariants - right.quote.addOns.hookVariants)[0] ?? null;
-  const total = (plan) => plan.quote.amountSats + feeReserveSats;
+  const total = (plan) => plan.totalAuthorizedSats;
   return {
     selected: {
       planId: selected.planId,
@@ -197,11 +198,22 @@ export class DecisionEngine {
     const planInputs = available.flatMap((product) => hookOptions.map((hookVariants) => ({ product, hookVariants })));
 
     const plans = await Promise.all(planInputs.map(async ({ product, hookVariants }) => {
-      const requested = quoteRequest(request, product.id, hookVariants);
+      const requested = quoteRequest(request, product.id, hookVariants, feeReserveSats);
       const candidatePlanId = planId(product.id, requested.addOns);
       try {
         const quote = await this.seller.createQuote(requested);
-        const totalAuthorizedSats = quote.amountSats + feeReserveSats;
+        if (feeReserveSats > 0 && !Number.isSafeInteger(quote.sellerFeeAllowanceSats)) {
+          throw new AppError("fee_inclusive_quote_required", "Seller did not provide a fee-inclusive quote", 502);
+        }
+        const sponsoredFeeSats = quote.sellerFeeAllowanceSats ?? feeReserveSats;
+        if (!Number.isSafeInteger(quote.amountSats) || quote.amountSats <= 0
+          || !Number.isSafeInteger(sponsoredFeeSats) || sponsoredFeeSats < 0
+          || sponsoredFeeSats > feeReserveSats
+          || (quote.customerPriceSats !== undefined
+            && quote.customerPriceSats !== quote.amountSats + sponsoredFeeSats)) {
+          throw new AppError("invalid_seller_quote", "Seller quote does not bind its invoice to the all-in customer price", 502);
+        }
+        const totalAuthorizedSats = quote.amountSats + sponsoredFeeSats;
         const rejections = [];
         if (Number.isSafeInteger(this.policy.maxPerOrderSats)
           && this.policy.maxPerOrderSats > 0
@@ -286,7 +298,7 @@ export class DecisionEngine {
             product: candidate.quote.product,
             scope: candidate.scope,
             amountSats: candidate.quote.amountSats,
-            feeReserveSats,
+            feeReserveSats: candidate.quote.sellerFeeAllowanceSats ?? feeReserveSats,
             totalAuthorizedSats: candidate.totalAuthorizedSats,
             remainingBudgetSats: candidate.remainingBudgetSats,
             estimatedTurnaroundMinutes: candidate.quote.estimatedTurnaroundMinutes,
@@ -326,7 +338,7 @@ export class DecisionEngine {
         planId: plan.planId,
         hookVariants: plan.quote.addOns.hookVariants,
         amountSats: plan.quote.amountSats,
-        feeReserveSats,
+        feeReserveSats: plan.quote.sellerFeeAllowanceSats ?? feeReserveSats,
         totalAuthorizedSats: plan.totalAuthorizedSats,
         estimatedTurnaroundMinutes: plan.quote.estimatedTurnaroundMinutes,
         withinBudget: plan.totalAuthorizedSats <= request.budgetSats,
@@ -340,7 +352,7 @@ export class DecisionEngine {
       objective: request.objective,
       objectiveFamily: request.objectiveFamily ?? null,
       budgetSats: request.budgetSats,
-      feeReserveSats,
+      feeReserveSats: selected.quote.sellerFeeAllowanceSats ?? feeReserveSats,
       weights,
       method,
       selected,
@@ -349,7 +361,7 @@ export class DecisionEngine {
       rationale,
       advisorError,
       economicAlternatives,
-      tradeoffs: tradeoffSummary(plans, selected, request, feeReserveSats),
+      tradeoffs: tradeoffSummary(plans, selected, request),
       referenceAssessment: request.brief?.referenceUrl
         ? { status: "input_only", note: "The URL is treated only as an optional localized visual input; no reference-style analysis or replication is promised." }
         : { status: "not_supplied" },

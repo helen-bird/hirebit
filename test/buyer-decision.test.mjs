@@ -49,6 +49,39 @@ test("Buyer optimizes output scope against the hard budget instead of fixing it 
   assert.equal(decision.tradeoffs.cheaper.amountSats, 1300);
 });
 
+test("Buyer can omit the payment-fee reserve for a simulated purchase plan", async () => {
+  const engine = new DecisionEngine({
+    seller: new CatalogSeller(),
+    policy: { ...policy, maxPaymentFeeSats: 500 },
+    paymentFeeReserveSats: 0,
+  });
+  const decision = await engine.evaluate({
+    objective: "conversion",
+    budgetSats: 2000,
+    scopeFlexibility: { hookVariants: true },
+  });
+  assert.equal(decision.feeReserveSats, 0);
+  assert.equal(decision.selected.quote.addOns.hookVariants, 3);
+  assert.equal(decision.selected.quote.amountSats, 1660);
+  assert.equal(decision.selected.totalAuthorizedSats, 1660);
+  const threeHookPlan = decision.plans.find((item) => (
+    item.productId === "proof_demo" && item.scope.hookVariants === 3
+  ));
+  assert.equal(threeHookPlan.totalAuthorizedSats, 1660);
+  assert.deepEqual(threeHookPlan.rejections, []);
+});
+
+test("Buyer refuses a Seller that still adds network fees above its advertised quote", async () => {
+  const engine = new DecisionEngine({
+    seller: new CatalogSeller(),
+    policy: { ...policy, maxPaymentFeeSats: 500 },
+    paymentFeeReserveSats: 500,
+  });
+  await assert.rejects(engine.evaluate({ objective: "conversion", budgetSats: 2000 }),
+    (error) => error.code === "no_eligible_quote"
+      && error.details?.plans?.every((plan) => plan.rejections.includes("fee_inclusive_quote_required")));
+});
+
 test("deadline makes late formats ineligible and leaves an auditable reason", async () => {
   const engine = new DecisionEngine({ seller: new CatalogSeller(), policy });
   const decision = await engine.evaluate({ objective: "comparison", budgetSats: 3000, deadlineMinutes: 45 });

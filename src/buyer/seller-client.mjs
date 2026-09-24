@@ -35,6 +35,10 @@ export class SellerClient {
 
   syncOrder(orderId) { return this.#request("POST", `/v1/orders/${encodeURIComponent(orderId)}/sync`, {}); }
 
+  requestCancellation(orderId) {
+    return this.#request("POST", `/v1/orders/${encodeURIComponent(orderId)}/request-cancellation`, {});
+  }
+
   authorizeDemoPayment(paymentId) {
     return this.#request("POST", `/v1/demo/payments/${encodeURIComponent(paymentId)}/authorize`, {});
   }

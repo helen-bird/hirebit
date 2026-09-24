@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { extname, resolve } from "node:path";
 
 import { AppError, errorPayload } from "./errors.mjs";
-import { resolveRegularFile, streamRegularFile } from "./safe-file.mjs";
+import { resolveRegularFile, streamRegularFile, verifyRegularFileDigest } from "./safe-file.mjs";
 import { assertAllowedHost, createRateLimiter, requireBearer } from "./security.mjs";
 
 const MIME = {
@@ -103,15 +103,23 @@ export function createSellerServer({
         json(response, 200, await service.retryProduction(decodeURIComponent(retryMatch[1])));
         return;
       }
+      const cancelMatch = url.pathname.match(/^\/v1\/orders\/([^/]+)\/request-cancellation$/u);
+      if (method === "POST" && cancelMatch) {
+        json(response, 200, await service.requestCancellation(decodeURIComponent(cancelMatch[1])));
+        return;
+      }
       const artifactMatch = url.pathname.match(/^\/v1\/orders\/([^/]+)\/artifacts\/([^/]+)$/u);
       if (method === "GET" && artifactMatch) {
         const orderId = decodeURIComponent(artifactMatch[1]);
         const filename = decodeURIComponent(artifactMatch[2]);
         const order = service.getOrder(orderId);
-        const allowed = order.production.result?.artifacts?.some((item) => item.name === filename);
-        if (!allowed || order.production.state !== "completed") throw new AppError("artifact_not_found", "Artifact not found", 404);
+        const artifact = order.production.result?.artifacts?.find((item) => item.name === filename);
+        if (!artifact || order.production.state !== "completed") throw new AppError("artifact_not_found", "Artifact not found", 404);
         const base = resolve(dataDir, "jobs", orderId, "outputs");
         const file = await resolveRegularFile(base, filename, "artifact_not_found");
+        if (artifact.sha256 !== undefined || artifact.bytes !== undefined) {
+          await verifyRegularFileDigest(file, artifact.sha256, artifact.bytes, "seller_artifact_integrity_failed");
+        }
         response.writeHead(200, {
           "content-type": MIME[extname(file.path).toLowerCase()] ?? "application/octet-stream",
           "content-length": file.size,
