@@ -14,6 +14,7 @@ let reusableReferenceUploadId = null;
 let previewObjectUrl = null;
 const selectedDecisionSteps = new Map();
 const selectedDecisionPages = new Map();
+const RESUMABLE_DELEGATION_KEY = "unfinishedDelegationId";
 
 function resizeWorkspace() {
   if (window.matchMedia("(max-width: 760px)").matches) return;
@@ -1454,7 +1455,11 @@ function showActions(...buttons) {
 
 function render(delegation) {
   active = delegation;
-  localStorage.setItem("activeDelegationId", delegation.id);
+  if (["completed", "cancelled", "declined"].includes(delegation.state)) {
+    localStorage.removeItem(RESUMABLE_DELEGATION_KEY);
+  } else {
+    localStorage.setItem(RESUMABLE_DELEGATION_KEY, delegation.id);
+  }
   activeId.textContent = stateLabels[delegation.state] ?? "IN PROGRESS";
   clear(stageContent);
   clear(actionBar);
@@ -1640,11 +1645,19 @@ $("#platform").addEventListener("change", updateReferenceVideoHint);
 selectPreset("auto");
 updateImageName();
 resizeWorkspace();
+// A plain visit always starts a new brief. Older versions reopened the last delivery automatically.
+localStorage.removeItem("activeDelegationId");
+const resumableId = localStorage.getItem(RESUMABLE_DELEGATION_KEY);
+if (resumableId && /^dlg_[a-f0-9-]{36}$/iu.test(resumableId)) {
+  const continueButton = $("#continue-previous");
+  continueButton.classList.remove("hidden");
+  continueButton.addEventListener("click", () => loadDelegation(resumableId));
+} else {
+  localStorage.removeItem(RESUMABLE_DELEGATION_KEY);
+}
 
 try { await loginFromFragment(); } catch (error) { toast(error.message, true); }
 await readiness();
 await loadRecent();
 const linked = new URLSearchParams(location.search).get("delegation");
-const saved = localStorage.getItem("activeDelegationId");
 if (linked && /^dlg_[a-f0-9-]{36}$/iu.test(linked)) await loadDelegation(linked);
-else if (saved) await loadDelegation(saved, true);
