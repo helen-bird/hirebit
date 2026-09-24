@@ -111,6 +111,36 @@ test("CampaignCompletionService refuses incomplete fulfillment", async () => {
   await assert.rejects(service.complete(incomplete), (error) => error.code === "fulfillment_not_complete");
 });
 
+test("a corrected delivery is versioned, keeps the original bytes, and refreshes its own proof", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "campaign-package-revision-test-"));
+  let currentVideo = video;
+  const service = new CampaignCompletionService({
+    seller: { async downloadArtifact() { return { data: currentVideo, mediaType: "video/mp4" }; } },
+    dataDir,
+    mediaValidator: async () => ({ expectedVideos: 1, validatedVideos: 1 }),
+  });
+  const original = await service.complete(campaign());
+  currentVideo = Buffer.from("corrected-verified-hypit-video");
+  const correctedCampaign = campaign();
+  correctedCampaign.sellerOrder.production.result.artifacts[0].sha256 = createHash("sha256").update(currentVideo).digest("hex");
+  correctedCampaign.sellerOrder.production.result.artifacts[0].bytes = currentVideo.length;
+  const revision = await service.complete(correctedCampaign, { revision: "r2" });
+  await assert.rejects(service.complete(correctedCampaign, { revision: "r2" }),
+    (error) => error.code === "delivery_revision_exists");
+  assert.equal(revision.revision, "r2");
+  assert.equal(revision.files.find((file) => file.mediaType === "video/mp4").path, "revisions/r2/creatives/final.mp4");
+  assert.deepEqual(await readFile(join(service.packageDirectory(campaign().id), "creatives/final.mp4")), video);
+  assert.deepEqual(await readFile(join(service.packageDirectory(campaign().id), "revisions/r2/creatives/final.mp4")), currentVideo);
+  assert.equal(original.files.find((file) => file.path === "manifest.json").sha256,
+    createHash("sha256").update(await readFile(join(service.packageDirectory(campaign().id), "manifest.json"))).digest("hex"));
+  const refreshed = await service.refreshPaymentProof(correctedCampaign, revision);
+  assert.equal(refreshed.files.find((file) => file.path === "revisions/r2/manifest.json").sha256,
+    createHash("sha256").update(await readFile(join(service.packageDirectory(campaign().id), "revisions/r2/manifest.json"))).digest("hex"));
+  assert.deepEqual(await readFile(join(service.packageDirectory(campaign().id), "creatives/final.mp4")), video);
+  await assert.rejects(service.complete(correctedCampaign, { revision: "../../bad" }),
+    (error) => error.code === "invalid_delivery_revision");
+});
+
 test("CampaignCompletionService rejects bytes that differ from Seller's completed artifact record", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "campaign-package-integrity-test-"));
   const completed = campaign();

@@ -32,12 +32,11 @@ productions/.hypit/
 .tools/
 .local-ops/
 .codex-finalizer/
-.deck-build/
-.deck-build-v3/
-.deck-inspect-current/
+.deck-build*/
+.deck-inspect*/
 .deck-assets/
 output/
-output-v3/
+output-*/
 coverage/
 *.log
 *.pid

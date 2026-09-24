@@ -1,12 +1,9 @@
 # Payment, cancellation and dispute lifecycle
 
-This is the implementation boundary, not a claim that Hirebit is a licensed escrow or a
-production-ready refund operator. GoBTC's `paid` status is the provider's accepted instant
-authorization. Seller production may start then; `paidAt` and transaction IDs can arrive later
-with batch settlement. For the registered Buyer instant-wallet flow, BTC remains in the Buyer's
-multisig UTXO until settlement, subject to the
-provider's signing/recovery rules. No on-chain transaction or Seller receipt is inferred from a
-platform receipt alone.
+GoBTC's `paid` status records accepted instant authorization. Seller production may start then;
+`paidAt` and transaction IDs can arrive later with batch settlement. For the registered Buyer
+instant-wallet flow, BTC remains in the Buyer's multisig UTXO until settlement, subject to the
+provider's signing/recovery rules. Hirebit records authorization and settlement as separate states.
 
 The advertised package price is the Buyer's **maximum total wallet debit**, inclusive of the
 Bitcoin network fee. Seller quotes a lower invoice and absorbs a bounded fee allowance in its
@@ -26,7 +23,7 @@ provider-confirmed terminal status for the original invoice before a new quote/o
 | Buyer requests cancellation after production starts | Preserve the running build and enter cost review | Only documented, actually incurred costs may be deducted; the remainder is refund-eligible after review. A provider job already running may be impossible to stop immediately |
 | Seller delivery is disputed within 72 hours | Record the delivered file, expected and observed result, optional timecode, package-manifest hash, and maximum quality refund for review | No free rework is included. An approved quality refund is limited to 20% of the service price; the current app records the case but does not yet adjudicate or send a refund |
 | Payment outcome is uncertain | Keep the spend reservation, reconcile the original GoBTC payment, never blindly resubmit | Human intervention remains necessary if provider evidence conflicts or is unavailable |
-| Invoice is `paid` without a matching Buyer submission receipt | Pause Buyer accounting and repeat payment attempts; review who funded the invoice | The Seller may have received outside-wallet funds; `paid` alone cannot establish a debit from this Buyer or identify the proper refund owner |
+| Invoice is `paid` without a matching Buyer submission receipt | Pause Buyer accounting **and block further payment attempts** while reviewing who funded the invoice | The Seller may have received outside-wallet funds; `paid` alone cannot establish a debit from this Buyer or identify the proper refund owner |
 | Invoice creation response is lost, then the idempotent retry returns an already-paid invoice | Link the existing Seller order but pause Buyer signing and accounting for payer-source review | The original payment may be external or an earlier uncertain Buyer submission; no second invoice or signature is attempted |
 | GoBTC later reports chain settlement | Add `paidAt` and transaction IDs; do not charge or produce again | Provider settlement evidence is not an independent chain audit |
 
@@ -69,7 +66,7 @@ independently authenticated customer accounts. There is no independent case auth
 adjudication UI/workflow, no durable itemized-cost evidence ingestion, no Seller-controlled
 outgoing refund wallet and verified refund destination, and
 no verified live GoBTC settlement/refund tests. Real BTC refunds must remain disabled until those
-are designed, audited and tested. The public demo is still a preview, not an escrow service.
+are designed, audited and tested. The public demo uses simulated payment responses.
 The Hypit social-video downloader caps individual reference files at 1 GB (1,000,000,000 bytes) while downloading and
 terminates its process group on overage. Transient muxing may still use up to about 3 GB. The
 re-fetchable reference cache evicts older entries before admitting a new file beyond 10 GB;
@@ -77,8 +74,9 @@ temporary extraction files and completed order inputs are outside that cache cap
 quality checks validate technical media properties but cannot prove that the creative matches the
 customer's product or the reference action; such disputes still require human review.
 
-For local operator triage, run `npm run transaction:review -- demo` (or `mainnet` for the
-separate real-payment state files). This is read-only and prints case IDs and action categories,
+For local operator triage, run `npm run transaction:review -- demo` for the local preview,
+`npm run transaction:review -- public-demo` for the public preview, or use `mainnet` for the
+separate real-payment state files. This is read-only and prints case IDs and action categories,
 not payment IDs, wallet addresses, API tokens, PSBTs or customer brief text. It flags pending
 refund/cost reviews, disputes, uncertain or unattributed payments, failed or stalled paid production, unconfirmed
 invoice expiry and non-simulated settlement still pending after 24 hours. A settlement flag is

@@ -81,6 +81,20 @@ test("same Idempotency-Key cannot create a second payment", async () => {
   assert.equal(payments.created[0].externalId, first.externalId);
 });
 
+test("one provider payment ID cannot authorize two different Seller orders", async () => {
+  const { service, payments, quote } = await fixture();
+  const first = await service.createOrder({ quoteId: quote.id, idempotencyKey: "unique-payment-order-one" });
+  await assert.rejects(
+    service.createOrder({ quoteId: quote.id, idempotencyKey: "unique-payment-order-two" }),
+    (error) => error.code === "payment_creation_mismatch",
+  );
+  assert.equal(payments.created.length, 2);
+  const orders = Object.values(service.store.snapshot().orders);
+  assert.equal(orders.length, 2);
+  assert.equal(orders.find((order) => order.id !== first.id).payment, null);
+  assert.equal(orders.find((order) => order.id !== first.id).state, "payment_creation_failed");
+});
+
 test("Seller includes the network fee inside the customer price and invoices less", async () => {
   const { service, payments } = await fixture();
   service.producer.readiness = () => ({ configured: true, workflowEconomics: {
@@ -173,6 +187,21 @@ test("pre-production cancellation prevents paid production and records an unpaid
   const restarted = new SellerService({ store: service.store, payments, producer, clock: () => 1_800_000_000_000 });
   await restarted.recover();
   assert.equal(producer.calls, 0);
+});
+
+test("recovery ignores a cancelled queued order without repeatedly draining it", async () => {
+  const { service, quote, producer } = await fixture();
+  const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: "cancelled-queue-recovery" });
+  await service.store.transaction((state) => {
+    const current = state.orders[order.id];
+    current.payment.authorization = "authorized";
+    current.production.state = "queued";
+    current.cancellation = { state: "stop_requested", requestedAt: new Date(1_800_000_000_000).toISOString() };
+  });
+  await service.recover();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(producer.calls, 0);
+  assert.equal(service.getOrder(order.id).production.state, "queued");
 });
 
 test("payment creation failure cannot erase an in-flight cancellation", async () => {
@@ -452,7 +481,7 @@ test("a Hypit watch timeout retains its build and retry reattaches without a sec
   assert.equal(producer.resumes, 2);
 });
 
-test("an uncertain failure after Hypit submission reattaches the saved build on manual retry", async () => {
+test("an uncertain status failure after Hypit submission self-repairs against the saved build", async () => {
   const { service, payments, quote } = await fixture();
   const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: "campaign-hypit-uncertain-result" });
   const producer = {
@@ -468,10 +497,7 @@ test("an uncertain failure after Hypit submission reattaches the saved build on 
   };
   service.producer = producer;
   payments.status = "paid";
-  const failed = await service.syncOrder(order.id, { awaitProduction: true });
-  assert.equal(failed.production.state, "failed");
-  assert.equal(failed.production.buildId, "build-saved-before-error");
-  const complete = await service.retryProduction(order.id);
+  const complete = await service.syncOrder(order.id, { awaitProduction: true });
   assert.equal(complete.production.state, "completed");
   assert.equal(producer.starts, 1);
   assert.equal(producer.resumes, 2);
@@ -573,6 +599,90 @@ test("an ambiguous Hypit submission timeout cannot create a second build on retr
   assert.equal(failed.production.state, "failed");
   await assert.rejects(service.retryProduction(order.id), (error) => error.code === "production_reconciliation_required");
   assert.equal(producer.starts, 1);
+});
+
+test("a failed pre-Build probe self-repairs once on the same paid order only with producer evidence", async () => {
+  const { service, payments, quote } = await fixture();
+  const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: "campaign-prebuild-probe-retry" });
+  const producer = {
+    starts: 0,
+    async start() {
+      this.starts += 1;
+      if (this.starts === 1) throw new AppError("hypit_command_failed", "Probe failed", 502);
+      return { buildId: "build-after-probe" };
+    },
+    async canRetryBeforeBuild() { return true; },
+    async recoverUnsubmitted() { return await this.start(); },
+    async resume() { return { provider: "self-hosted-hypit", buildId: "build-after-probe", artifacts: [{ name: "final.mp4" }] }; },
+  };
+  service.producer = producer;
+  payments.status = "paid";
+  const completed = await service.syncOrder(order.id, { awaitProduction: true });
+  assert.equal(completed.production.state, "completed");
+  assert.equal(producer.starts, 2);
+  assert.equal(completed.production.attempts, 2);
+  assert.equal(payments.created.length, 1);
+});
+
+test("pre-Build self-repair stops after one retry and does not repeat payment", async () => {
+  const { service, payments, quote } = await fixture();
+  const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: "prebuild-internal-retry-exhausted" });
+  const producer = {
+    starts: 0,
+    async start() { this.starts += 1; throw new AppError("hypit_command_failed", "Probe failed", 502); },
+    async recoverUnsubmitted() { return await this.start(); },
+    async canRetryBeforeBuild() { return true; },
+    async resume() { throw new Error("No Build should exist"); },
+  };
+  service.producer = producer;
+  payments.status = "paid";
+  const failed = await service.syncOrder(order.id, { awaitProduction: true });
+  assert.equal(failed.production.state, "failed");
+  assert.equal(failed.production.error.code, "hypit_command_failed", JSON.stringify(failed.production.error));
+  assert.equal(failed.production.attempts, 2);
+  assert.equal(producer.starts, 2);
+  assert.equal(payments.created.length, 1);
+});
+
+test("uncertain pre-Build evidence prevents an automatic second submission", async () => {
+  const { service, payments, quote } = await fixture();
+  const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: "prebuild-proof-missing" });
+  const producer = {
+    starts: 0,
+    recoveries: 0,
+    async start() { this.starts += 1; throw new AppError("hypit_command_failed", "Command stopped", 502); },
+    async recoverUnsubmitted() { this.recoveries += 1; return { buildId: "unexpected" }; },
+    async canRetryBeforeBuild() { return false; },
+    async resume() { throw new Error("No confirmed Build exists"); },
+  };
+  service.producer = producer;
+  payments.status = "paid";
+  const failed = await service.syncOrder(order.id, { awaitProduction: true });
+  assert.equal(failed.production.state, "failed");
+  assert.equal(failed.production.error.code, "hypit_command_failed");
+  assert.equal(producer.starts, 1);
+  assert.equal(producer.recoveries, 0);
+  assert.equal(payments.created.length, 1);
+});
+
+test("two status-read failures surface a failed order without a second Build or payment", async () => {
+  const { service, payments, quote } = await fixture();
+  const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: "status-reattach-exhausted" });
+  const producer = {
+    starts: 0,
+    resumes: 0,
+    async start() { this.starts += 1; return { buildId: "durable-build" }; },
+    async resume() { this.resumes += 1; throw new AppError("hypit_status_unavailable", "Status unavailable", 502); },
+  };
+  service.producer = producer;
+  payments.status = "paid";
+  const failed = await service.syncOrder(order.id, { awaitProduction: true });
+  assert.equal(failed.production.state, "failed");
+  assert.equal(failed.production.error.code, "hypit_status_unavailable");
+  assert.equal(failed.production.buildId, "durable-build");
+  assert.equal(producer.starts, 1);
+  assert.equal(producer.resumes, 2);
+  assert.equal(payments.created.length, 1);
 });
 
 test("unaccepted production is removed from the live catalog and cannot be quoted", async () => {

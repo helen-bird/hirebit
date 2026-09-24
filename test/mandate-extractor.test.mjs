@@ -134,3 +134,14 @@ test("post-model validation rejects unsafe URLs", () => {
     (error) => error.code === "invalid_mandate_extraction",
   );
 });
+
+test("delivery timing distinguishes an explicit no-deadline answer from silence", () => {
+  assert.equal(validateExtractedMandate(extraction({ deadlineMinutes: null, deadlineType: "none" })).deadlineType, "none");
+  assert.equal(validateExtractedMandate(extraction({ deadlineMinutes: null, deadlineType: null })).deadlineType, null);
+  for (const [deadlineMinutes, deadlineType] of [[null, "hard"], [120, "none"], [120, null]]) {
+    assert.throws(
+      () => validateExtractedMandate(extraction({ deadlineMinutes, deadlineType })),
+      (error) => error.code === "invalid_mandate_extraction",
+    );
+  }
+});

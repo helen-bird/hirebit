@@ -102,7 +102,10 @@ const intake = new IntakeService({
   buyer: service,
   policy,
   allowExternalUrls: !publicDemoEnabled,
-  referenceUploadBaseUrl: publicDemoEnabled ? process.env.PUBLIC_DEMO_ORIGIN : null,
+  // The Seller resolves this exact upload URL from the shared, private upload
+  // directory. A loopback-only demo can use the same binding without exposing
+  // its Buyer API through the public Pages proxy.
+  referenceUploadBaseUrl: process.env.PUBLIC_DEMO_ORIGIN ?? null,
 });
 await intake.recover();
 const pollInterval = Number(process.env.BUYER_POLL_INTERVAL_MS ?? policy.pollIntervalMs ?? 5000);

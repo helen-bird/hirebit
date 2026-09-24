@@ -137,12 +137,68 @@ function assertSamePaymentIntent(order, original) {
   }
 }
 
+function assertCancellationProgress(order, original) {
+  const previous = original?.cancellation?.state;
+  if (previous == null) return;
+  const incoming = order?.cancellation?.state;
+  const progress = { stop_requested: 1, cancelled_unpaid: 2, refund_review_required: 3, cost_review_required: 3 };
+  if (incoming == null || progress[incoming] === undefined
+    || progress[previous] === undefined || progress[incoming] < progress[previous]
+    || (progress[previous] === 3 && incoming !== previous)) {
+    throw new AppError("seller_cancellation_regressed", "Seller cancellation state needs reconciliation", 502);
+  }
+}
+
 function hasBuyerSubmissionReceipt(campaign, order) {
   const attempt = campaign.paymentAttempt;
   return attempt?.status === "submitted"
     && attempt.prepared?.paymentId === order.payment.id
     && typeof attempt.receipt?.instantReceiptId === "string"
     && attempt.receipt.instantReceiptId !== "";
+}
+
+function cancellationResolution(state, clock, campaignId, campaign, order) {
+  const resolution = order.cancellation?.state;
+  const submissionMayHaveReachedProvider = ["submitting", "submitted", "uncertain"].includes(campaign.paymentAttempt?.status)
+    || campaign.spentSats > 0;
+  const conflictingUnpaidCancellation = resolution === "cancelled_unpaid" && submissionMayHaveReachedProvider;
+  campaign.state = resolution === "cancelled_unpaid" && !conflictingUnpaidCancellation ? "cancelled"
+    : resolution === "refund_review_required" ? "refund_review_required"
+      : resolution === "cost_review_required" ? "cost_review_required" : "cancellation_pending";
+  campaign.cancellation = {
+    ...campaign.cancellation,
+    state: campaign.state,
+    refund: order.cancellation?.refund ?? campaign.cancellation?.refund ?? null,
+    productionStartedAt: order.cancellation?.productionStartedAt ?? campaign.cancellation?.productionStartedAt ?? null,
+  };
+  if (conflictingUnpaidCancellation) {
+    if (campaign.spentSats === 0) {
+      const feeSats = Number(campaign.paymentAttempt?.prepared?.validation?.feeSats
+        ?? campaign.decision?.selected?.quote?.sellerFeeAllowanceSats ?? 0);
+      campaign.spendReservation ??= {
+        amountSats: order.amountSats,
+        feeSats,
+        totalSats: order.amountSats + feeSats,
+      };
+      campaign.spendReservation.status = "uncertain";
+    }
+    campaign.lastError = {
+      code: "payment_status_conflicts_submission",
+      message: "Seller reports an unpaid cancellation after Buyer payment submission; payment needs reconciliation",
+      at: nowIso(clock),
+    };
+    if (campaign.paymentStatusConflictAt == null) {
+      campaign.paymentStatusConflictAt = nowIso(clock);
+      audit(state, clock, "payment.status_conflicts_submission", campaignId, {
+        paymentId: order.payment?.id,
+        sellerStatus: order.payment?.status ?? null,
+      });
+    }
+  }
+  if (campaign.state === "cancelled") {
+    campaign.cancelledAt ??= nowIso(clock);
+    campaign.spendReservation = null;
+  }
 }
 
 export class BuyerService {
@@ -273,7 +329,9 @@ export class BuyerService {
     const pending = await this.store.transaction((state) => {
       const campaign = state.campaigns[campaignId];
       if (campaign === undefined) throw new AppError("campaign_not_found", "Campaign not found", 404);
-      if (["completed", "cancelled"].includes(campaign.state)) return publicCampaign(campaign);
+      if (["completed", "cancelled", "refund_review_required", "cost_review_required"].includes(campaign.state)) {
+        return publicCampaign(campaign);
+      }
       const mayHaveRemoteOrder = campaign.cancellation?.orderMayExist === true
         || campaign.state === "ordering" || campaign.sellerOrder !== null;
       campaign.state = mayHaveRemoteOrder ? "cancellation_pending" : "cancelled";
@@ -288,7 +346,7 @@ export class BuyerService {
       if (firstRequest) audit(state, this.clock, mayHaveRemoteOrder ? "campaign.cancellation_requested" : "campaign.cancelled", campaignId);
       return publicCampaign(campaign);
     });
-    if (pending.state === "cancelled") return pending;
+    if (["cancelled", "refund_review_required", "cost_review_required"].includes(pending.state)) return pending;
     if (pending.sellerOrder === null) {
       try {
         const quote = pending.decision?.selected?.quote;
@@ -314,21 +372,9 @@ export class BuyerService {
       const reconciled = await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
         assertSamePaymentIntent(order, current.sellerOrder);
+        assertCancellationProgress(order, current.sellerOrder);
         current.sellerOrder = order;
-        const resolution = order.cancellation?.state;
-        current.state = resolution === "cancelled_unpaid" ? "cancelled"
-          : resolution === "refund_review_required" ? "refund_review_required"
-            : resolution === "cost_review_required" ? "cost_review_required" : "cancellation_pending";
-        current.cancellation = {
-          ...current.cancellation,
-          state: current.state,
-          refund: order.cancellation?.refund ?? null,
-          productionStartedAt: order.cancellation?.productionStartedAt ?? null,
-        };
-        if (current.state === "cancelled") {
-          current.cancelledAt = nowIso(this.clock);
-          current.spendReservation = null;
-        }
+        cancellationResolution(state, this.clock, campaignId, current, order);
         current.updatedAt = nowIso(this.clock);
         audit(state, this.clock, "campaign.cancellation_reconciled", campaignId, { state: current.state });
         return publicCampaign(current);
@@ -420,9 +466,9 @@ export class BuyerService {
     }
     if (campaign.state === "cancellation_pending") {
       const next = Date.parse(campaign.sellerOrder?.payment?.nextCheckAt ?? "");
-      if (campaign.sellerOrder?.cancellation?.state === "stop_requested"
+      if ((campaign.sellerOrder?.cancellation?.state === "stop_requested" || campaign.paymentStatusConflictAt != null)
         && Number.isFinite(next) && next > this.clock()) return campaign;
-      return await this.cancelCampaign(campaignId);
+      if (campaign.paymentStatusConflictAt == null) return await this.cancelCampaign(campaignId);
     }
     if (campaign.sellerOrder === null) return campaign;
     try {
@@ -430,6 +476,7 @@ export class BuyerService {
       const synced = await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
         assertSamePaymentIntent(order, current.sellerOrder);
+        assertCancellationProgress(order, current.sellerOrder);
         const wasPaid = current.spentSats > 0;
         current.sellerOrder = order;
         current.updatedAt = nowIso(this.clock);
@@ -454,13 +501,7 @@ export class BuyerService {
             }
             if (current.cancellation?.requestedAt) {
               if (order.production?.state === "completed") current.fulfillmentResult = order.production.result;
-              const resolution = order.cancellation?.state;
-              current.state = resolution === "cancelled_unpaid" ? "cancelled"
-                : resolution === "refund_review_required" ? "refund_review_required"
-                  : resolution === "cost_review_required" ? "cost_review_required" : "cancellation_pending";
-              current.cancellation.state = current.state;
-              current.cancellation.refund = order.cancellation?.refund ?? null;
-              if (current.state === "cancelled") current.cancelledAt ??= nowIso(this.clock);
+              cancellationResolution(state, this.clock, campaignId, current, order);
             } else {
               current.state = "payment_origin_review_required";
             }
@@ -493,27 +534,47 @@ export class BuyerService {
           }
           current.state = order.state === "completed" ? "packaging" : "fulfillment";
         } else if (TERMINAL_UNPAID_STATUSES.has(String(order.payment?.status ?? "").toLowerCase())) {
-          current.state = "payment_failed";
-          current.spendReservation = null;
-          discardSignedPsbt(current);
-          audit(state, this.clock, "payment.reservation_released", campaignId, {
-            reason: `seller_status_${order.payment.status}`,
-          });
+          const mayHaveSubmitted = ["submitting", "submitted", "uncertain"].includes(current.paymentAttempt?.status);
+          if (mayHaveSubmitted) {
+            // A submission receipt (or an interrupted submission) conflicts with
+            // a later unpaid status. Keep the allocation until the provider
+            // outcome is reconciled; another purchase must not reuse it.
+            const feeSats = Number(current.paymentAttempt?.prepared?.validation?.feeSats
+              ?? current.decision?.selected?.quote?.sellerFeeAllowanceSats ?? 0);
+            current.spendReservation ??= {
+              amountSats: order.amountSats,
+              feeSats,
+              totalSats: order.amountSats + feeSats,
+            };
+            current.spendReservation.status = "uncertain";
+            current.state = "payment_uncertain";
+            current.lastError = {
+              code: "payment_status_conflicts_submission",
+              message: "Seller reports an unpaid invoice after Buyer payment submission; payment needs reconciliation",
+              at: nowIso(this.clock),
+            };
+            if (current.paymentStatusConflictAt == null) {
+              current.paymentStatusConflictAt = nowIso(this.clock);
+              audit(state, this.clock, "payment.status_conflicts_submission", campaignId, {
+                paymentId: order.payment.id,
+                sellerStatus: order.payment.status,
+              });
+            }
+            discardSignedPsbt(current);
+          } else {
+            current.state = "payment_failed";
+            current.spendReservation = null;
+            discardSignedPsbt(current);
+            audit(state, this.clock, "payment.reservation_released", campaignId, {
+              reason: `seller_status_${order.payment.status}`,
+            });
+          }
         } else if (current.state !== "payment_uncertain") {
           current.state = "awaiting_payment";
         }
         if (current.cancellation?.requestedAt) {
           if (order.production?.state === "completed") current.fulfillmentResult = order.production.result;
-          const resolution = order.cancellation?.state;
-          current.state = resolution === "cancelled_unpaid" ? "cancelled"
-            : resolution === "refund_review_required" ? "refund_review_required"
-              : resolution === "cost_review_required" ? "cost_review_required" : "cancellation_pending";
-          current.cancellation.state = current.state;
-          current.cancellation.refund = order.cancellation?.refund ?? null;
-          if (current.state === "cancelled") {
-            current.cancelledAt ??= nowIso(this.clock);
-            current.spendReservation = null;
-          }
+          cancellationResolution(state, this.clock, campaignId, current, order);
           return publicCampaign(current);
         }
         if (order.state === "completed") {
@@ -599,7 +660,8 @@ export class BuyerService {
             || ["fulfillment", "packaging", "packaging_failed"].includes(campaign.state)))
         .filter((campaign) => {
           const watchingCancellation = campaign.state === "cancellation_pending"
-            && campaign.sellerOrder?.cancellation?.state === "stop_requested";
+            && (campaign.sellerOrder?.cancellation?.state === "stop_requested"
+              || campaign.paymentStatusConflictAt != null);
           if (!["completed", "cancelled", "refund_review_required", "cost_review_required"].includes(campaign.state)
             && !watchingCancellation) return true;
           const nextCheckAt = Date.parse(campaign.sellerOrder.payment?.nextCheckAt ?? "");

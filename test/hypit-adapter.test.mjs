@@ -17,6 +17,14 @@ import { ProductionInputPreparer } from "../src/production-input-preparer.mjs";
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
 
+test("Apple Silicon Hypit defaults to a runnable native ffprobe", {
+  skip: process.platform !== "darwin" || process.arch !== "arm64",
+}, async () => {
+  const adapter = new HypitAdapter({ rootDir, dataDir: join(rootDir, ".seller"), workflowFile: "workflows/unused.json", hypitBin: "hypit" });
+  const { stdout } = await execFileAsync(join(adapter.mediaBinDir, "ffprobe"), ["-version"]);
+  assert.match(stdout, /^ffprobe version/u);
+});
+
 test("reference-video cache evicts only old cached media before reaching its total cap", async () => {
   const directory = await mkdtemp(join(tmpdir(), "hypit-cache-budget-"));
   const old = `${"a".repeat(64)}.mp4`;
@@ -26,6 +34,21 @@ test("reference-video cache evicts only old cached media before reaching its tot
   await utimes(join(directory, old), oldDate, oldDate);
   assert.equal(await pruneReferenceVideoCache(directory, { incomingBytes: 4, maxBytes: 12 }), 10);
   assert.deepEqual((await readdir(directory)).sort(), [recent, "manifest.json"].sort());
+});
+
+test("pre-Build retry evidence fails closed when a submission marker exists", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hypit-prebuild-proof-"));
+  const dataDir = join(directory, "seller-data");
+  const jobDir = join(dataDir, "jobs", "ord_proof");
+  await mkdir(jobDir, { recursive: true });
+  const adapter = new HypitAdapter({ rootDir, dataDir, workflowFile: "workflows/unused.json", hypitBin: "hypit" });
+  const order = { id: "ord_proof", amountSats: 1600 };
+  const quote = { id: "qte_proof" };
+  assert.equal(await adapter.canRetryBeforeBuild({ order, quote }), false);
+  await writeFile(join(jobDir, "commission.json"), JSON.stringify({ order, quote }));
+  assert.equal(await adapter.canRetryBeforeBuild({ order, quote }), true);
+  await writeFile(join(jobDir, "build.attempt.json"), "uncertain");
+  assert.equal(await adapter.canRetryBeforeBuild({ order, quote }), false);
 });
 
 test("reference download stops before disk exhaustion instead of filling the website host", async () => {

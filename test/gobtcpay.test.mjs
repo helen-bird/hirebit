@@ -65,3 +65,19 @@ test("GoBTC failure envelope is authoritative even on HTTP 200", async () => {
       && error.details.traceId === "trace-1",
   );
 });
+
+test("GoBTC payment creation rejects fractional and unsafe satoshi values before contacting the provider", async () => {
+  let requests = 0;
+  const client = new GoBtcPayClient({
+    baseUrl: "https://api.example/v1.2",
+    merchantApiKey: "sk_live_test",
+    fetchImpl: async () => { requests += 1; return response({}); },
+  });
+  for (const amountSats of [0, -1, 900.5, Number.MAX_SAFE_INTEGER + 1, NaN]) {
+    await assert.rejects(
+      client.createPayment({ amountSats, description: "x", externalId: "same" }),
+      (error) => error.code === "invalid_payment_amount",
+    );
+  }
+  assert.equal(requests, 0);
+});

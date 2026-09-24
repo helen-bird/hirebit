@@ -26,6 +26,22 @@ test("safe file streaming transfers FileHandle ownership without a double close"
   }
 });
 
+test("abandoned download closes the open file handle", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "safe-file-aborted-"));
+  try {
+    await writeFile(join(directory, "large.mp4"), Buffer.alloc(1024 * 1024));
+    const selected = await resolveRegularFile(directory, "large.mp4");
+    const response = new PassThrough({ highWaterMark: 1 });
+    streamRegularFile(response, selected);
+    const closed = once(selected.handle, "close");
+    response.destroy();
+    await closed;
+    await assert.rejects(selected.handle.stat(), (error) => error.code === "EBADF");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("package download verifies the opened file before streaming it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "safe-file-digest-"));
   try {

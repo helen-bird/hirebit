@@ -19,6 +19,7 @@ async function generatedVideoBytes(root, color = "magenta") {
   const path = join(root, `${color}.mp4`);
   await execFileAsync(ffmpegStatic, [
     "-nostdin", "-y", "-f", "lavfi", "-i", "testsrc2=size=180x320:rate=24:duration=8",
+    ...(color === "magenta" ? [] : ["-vf", `drawbox=x=40:y=80:w=100:h=160:color=${color}:t=fill`]),
     "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", path,
   ]);
   return await readFile(path);
@@ -57,6 +58,7 @@ async function referenceGuidance(input) {
   const commission = JSON.parse(commissionBytes);
   return {
     format: "seller.reference-vision-plan@2",
+    source: { durationSeconds: 12.6 },
     orderId: input.order.id,
     productId: input.quote.product.id,
     commissionSha256: sha256(commissionBytes),
@@ -171,7 +173,9 @@ test("concurrent orders cannot both pass a one-generation Veo cost cap", async (
 test("Google Veo provider submits two continuous reference segments and reuses the bound output", async () => {
   const input = await setup();
   const generatedBytes = await generatedVideoBytes(input.root);
+  const closingBytes = await generatedVideoBytes(input.root, "blue");
   const calls = [];
+  let generationIndex = 0;
   const provider = new GoogleVeoVideoProvider({
     projectId: "project-test",
     enabled: true,
@@ -184,11 +188,12 @@ test("Google Veo provider submits two continuous reference segments and reuses t
     fetchImpl: async (url, options) => {
       calls.push({ url, options });
       if (url.endsWith(":predictLongRunning")) {
+        generationIndex += 1;
         return new Response(JSON.stringify({ name: "projects/project-test/operations/op-1" }), { status: 200 });
       }
       return new Response(JSON.stringify({
         done: true,
-        response: { videos: [{ bytesBase64Encoded: generatedBytes.toString("base64") }] },
+        response: { videos: [{ bytesBase64Encoded: (generationIndex === 1 ? generatedBytes : closingBytes).toString("base64") }] },
       }), { status: 200 });
     },
   });
@@ -199,6 +204,7 @@ test("Google Veo provider submits two continuous reference segments and reuses t
   assert.equal(manifest.provider, "google-vertex-veo");
   assert.equal(manifest.referenceAdaptationSha256, referenceAdaptation.manifestSha256);
   assert.equal(manifest.generationCount, 2);
+  assert.equal(manifest.output.durationSeconds, 12.6);
   assert.equal(manifest.segments.length, 2);
   assert.equal(manifest.segments[0].sha256, sha256(generatedBytes));
   assert.equal(calls.length, 4);
@@ -207,10 +213,14 @@ test("Google Veo provider submits two continuous reference segments and reuses t
   assert.equal(body.parameters.durationSeconds, 8);
   assert.equal(body.parameters.sampleCount, 1);
   assert.equal(body.parameters.generateAudio, false);
+  assert.match(body.parameters.negativePrompt, /gibberish lettering/u);
   assert.equal(body.instances[0].prompt.includes("http"), false);
   assert.match(body.instances[0].prompt, /Bring one cotton swab into frame beside the eye/u);
+  assert.doesNotMatch(body.instances[0].prompt, /See the useful detail/u);
+  assert.match(body.instances[0].prompt, /Hypit adds all approved words later/u);
   assert.match(body.instances[0].prompt, /do not reproduce or identify the source person/u);
   const continuationBody = JSON.parse(calls[2].options.body);
+  assert.equal(continuationBody.parameters.negativePrompt, body.parameters.negativePrompt);
   assert.match(continuationBody.instances[0].prompt, /Continue seamlessly/u);
   assert.notEqual(continuationBody.instances[0].image.bytesBase64Encoded, body.instances[0].image.bytesBase64Encoded);
 
@@ -220,6 +230,17 @@ test("Google Veo provider submits two continuous reference segments and reuses t
   assert.deepEqual(again, manifest);
   assert.equal(calls.length, 4);
   assert.ok((await readFile(manifest.output.path)).length > 10_000);
+  const { stderr: durationText } = await execFileAsync(ffmpegStatic, [
+    "-nostdin", "-hide_banner", "-i", manifest.output.path, "-f", "null", "-",
+  ]);
+  const durationSeconds = Number(durationText.match(/Duration: 00:00:(\d+(?:\.\d+)?)/u)?.[1]);
+  assert.ok(Math.abs(durationSeconds - 12.6) < 0.15);
+  const { stdout: lastFrame } = await execFileAsync(ffmpegStatic, [
+    "-nostdin", "-loglevel", "error", "-sseof", "-0.15", "-i", manifest.output.path,
+    "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+  ], { encoding: "buffer", maxBuffer: 1_000_000 });
+  const centerPixel = ((Math.floor(320 / 2) * 180) + Math.floor(180 / 2)) * 3;
+  assert.ok(lastFrame[centerPixel + 2] > lastFrame[centerPixel] + 80, "closing segment must survive duration matching");
 });
 
 test("Seller absorbs at most one ambiguous Veo resubmission per segment", async () => {

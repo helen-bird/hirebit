@@ -22,9 +22,12 @@ const CANONICAL_LANGUAGE_BY_LOWERCASE = new Map(SUPPORTED_PRODUCTION_LANGUAGES.m
 
 const ACCENT_LANGUAGE_ALIASES = new Map(Object.entries({
   "us english": "en-US",
+  "united states english": "en-US",
+  "english (united states)": "en-US",
   "american english": "en-US",
   american: "en-US",
   "uk english": "en-GB",
+  "united kingdom english": "en-GB",
   "british english": "en-GB",
   british: "en-GB",
   "us spanish": "es-US",

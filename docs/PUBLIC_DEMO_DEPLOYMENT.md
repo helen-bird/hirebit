@@ -3,7 +3,7 @@
 For the supervised one-week Mac deployment, see [Local hosting operations](LOCAL_WEEK_HOSTING.md).
 It adds bounded keep-awake, process recovery, health checks and private state snapshots.
 A fixed named tunnel requires a Cloudflare-managed domain. The local operations guide records the
-current migration and activation status; a Quick Tunnel is not an uptime guarantee.
+completed migration and its remaining single-Mac limits; a Quick Tunnel is not an uptime plan.
 The current Hirebit deployment completed its named-tunnel cutover on 2026-09-23; its Pages entry
 URL is unchanged, and the old temporary tunnel is stopped.
 
@@ -58,28 +58,33 @@ Create an ignored `.env.public-demo` from `.env.public-demo.example` and fill in
 
 ```dotenv
 PUBLIC_DEMO_ORIGIN=https://<your-pages-project>.pages.dev
-PUBLIC_DEMO_ACCESS_TOKEN=<generate-a-random-demo-token>
-BUYER_ALLOWED_HOSTS=127.0.0.1,localhost,::1,<your-tunnel>.trycloudflare.com
+PUBLIC_DEMO_ACCESS_TOKEN=
+BUYER_ALLOWED_HOSTS=127.0.0.1,localhost,::1,<your-stable-origin-host>
 PUBLIC_DEMO_MAX_DELEGATIONS_PER_HOUR=20
 PUBLIC_DEMO_MAX_REQUEST_CHARS=1000
 PUBLIC_DEMO_MAX_MUTATIONS_PER_MINUTE=30
 ```
 
-Do not commit this file or reuse the token for any other service.
+Leave the token blank until you generate a unique, private value (for example, run
+`openssl rand -hex 24` locally and paste its output into the ignored file); startup rejects an empty token.
+Do not paste a literal example token, commit this file, or reuse the value for another service.
 
-For a short manual preview only, start Seller, Buyer and a temporary outbound tunnel in separate
-terminals. For the week-long deployment, use the supervised named-tunnel procedure above instead:
+For local UI work, start Seller and Buyer on loopback without opening a public tunnel. For a public
+preview, use a named tunnel restricted to the Buyer port and follow the supervised procedure in
+[Local hosting operations](LOCAL_WEEK_HOSTING.md). The current Hirebit route uses
+`origin.hirebit-demo.xyz` behind the unchanged Pages URL. A new operator must use their own domain
+and Cloudflare project; these example values are not usable credentials or an automatic setup.
 
 ```bash
 npm run public-demo:seller
 npm run public-demo:buyer
-docker run --rm cloudflare/cloudflared:latest tunnel --no-autoupdate --url http://host.docker.internal:8788
 ```
 
-Configure the Pages Worker secret/variable `UPSTREAM_ORIGIN` to the exact HTTPS tunnel origin. The
-Worker source contains no account token, application token or environment-specific hostname. When
-the tunnel hostname changes, update `BUYER_ALLOWED_HOSTS` locally and `UPSTREAM_ORIGIN` in
-Cloudflare, then restart only the Buyer and redeploy only the gateway.
+Configure the Pages Worker variable `UPSTREAM_ORIGIN` to the exact HTTPS named-tunnel origin. The
+Worker source contains no account token, application token or environment-specific hostname. A
+hostname change requires updating the Buyer allowlist and Pages variable, followed by a controlled
+Buyer restart and gateway deployment. Before merging to the default branch, verify the Pages
+project's source integration so a Git push cannot unexpectedly publish the new gateway.
 
 Generate a local invite after configuration:
 

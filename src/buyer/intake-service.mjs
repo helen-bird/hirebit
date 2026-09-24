@@ -119,6 +119,14 @@ export function questionsFor(extraction, {
       zh, "buyer_policy_limit",
     ));
   }
+  if (extraction.deadlineMinutes === null && extraction.deadlineType !== "none") {
+    questions.push(question(
+      "deadline", "deadlineMinutes",
+      "你希望什么时候收到成片？如果没有交付时间要求，也请明确说没有要求。",
+      "When do you need the finished video? If you have no delivery-time requirement, please say so explicitly.",
+      zh, "deadline_missing",
+    ));
+  }
   if (extraction.authorizationMode === "unspecified") {
     questions.push(question(
       "authorization", "authorizationMode",
@@ -600,7 +608,8 @@ export class IntakeService {
       const expected = typeof evidence?.expected === "string" ? evidence.expected.trim() : "";
       const observed = typeof evidence?.observed === "string" ? evidence.observed.trim() : "";
       const artifactPath = typeof evidence?.artifactPath === "string" ? evidence.artifactPath : "";
-      const artifact = files.find((file) => file.path === artifactPath && artifactPath.startsWith("creatives/"));
+      const artifact = files.find((file) => file.path === artifactPath
+        && /^(?:revisions\/r(?:[2-9]|[1-9]\d{1,4})\/)?creatives\//u.test(artifactPath));
       if (isDeliveryDispute && (expected.length < 5 || expected.length > 500
         || observed.length < 5 || observed.length > 500 || artifact === undefined)) {
         throw new AppError("dispute_evidence_required", "Describe expected and observed results and select a delivered creative", 400);
@@ -614,7 +623,9 @@ export class IntakeService {
           throw new AppError("invalid_dispute_timecode", "timecodeSeconds must be within the verified delivered video duration", 400);
         }
       }
-      const manifestSha256 = files.find((file) => file.path === "manifest.json")?.sha256
+      const manifestPath = current.campaign.package?.revision
+        ? `revisions/${current.campaign.package.revision}/manifest.json` : "manifest.json";
+      const manifestSha256 = files.find((file) => file.path === manifestPath)?.sha256
         ?? current.campaign.package?.manifestSha256 ?? null;
       const deliveryManifest = current.campaign.package == null ? null : {
         version: 1,
@@ -622,7 +633,7 @@ export class IntakeService {
         generatedAt: current.campaign.package.generatedAt ?? null,
         ...(current.campaign.package.settlementUpdatedAt
           ? { settlementUpdatedAt: current.campaign.package.settlementUpdatedAt } : {}),
-        files: structuredClone(files.filter((file) => file.path !== "manifest.json")),
+        files: structuredClone(files.filter((file) => file.path !== manifestPath)),
       };
       const reconstructedManifestSha256 = deliveryManifest === null ? null
         : createHash("sha256").update(`${JSON.stringify(deliveryManifest, null, 2)}\n`).digest("hex");
@@ -817,55 +828,55 @@ export class IntakeService {
         return await this.#recordCampaign(delegationId, campaign, "campaign.recovered");
       }
       const mandate = delegation.mandate;
-      if (mandate.referenceUploadId !== null && this.referenceUploadBaseUrl === null) {
-        throw new AppError("reference_upload_unavailable", "Uploaded product images are not configured for this Buyer", 503);
-      }
-      const uploadedReferenceUrl = mandate.referenceUploadId === null
-        ? null
-        : `${this.referenceUploadBaseUrl}/v1/uploads/${encodeURIComponent(mandate.referenceUploadId)}`;
-      const autoExecute = mandate.authorizationMode === "auto_within_budget";
-      const deadlineAt = mandate.deadlineMinutes === null
-        ? null
-        : new Date(Date.parse(delegation.createdAt) + (mandate.deadlineMinutes * 60_000)).toISOString();
-      if (deadlineAt !== null && Date.parse(deadlineAt) <= this.clock()) {
-        throw new AppError("delegation_deadline_expired", "The delegation deadline expired before campaign creation", 409);
-      }
-      const campaignInput = {
-        objective: mandate.objective,
-        objectiveFamily: mandate.objectiveFamily,
-        budgetSats: mandate.budgetSats,
-        ...(mandate.deadlineMinutes === null ? {} : { deadlineMinutes: mandate.deadlineMinutes }),
-        ...(deadlineAt === null ? {} : { deadlineAt }),
-        ...(mandate.deadlineType === null ? {} : { deadlineType: mandate.deadlineType }),
-        preferences: { weights: mandate.decisionPriorities },
-        scopeFlexibility: mandate.scopeFlexibility,
-        autoExecute,
-        authorizationMode: mandate.authorizationMode,
-        delegationId,
-        decisionContext: {
-          customerRequest: delegation.input.request,
-          assumptions: mandate.assumptions,
-        },
-        brief: {
-          productName: mandate.brief.productName ?? mandate.subject,
-          description: mandate.brief.description ?? mandate.subject,
-          ...(mandate.brief.referenceUrl
-            ? { referenceUrl: mandate.brief.referenceUrl }
-            : (uploadedReferenceUrl ? { referenceUrl: uploadedReferenceUrl } : {})),
-          ...(mandate.brief.evidenceUrl ? { evidenceUrl: mandate.brief.evidenceUrl } : {}),
-          ...(mandate.brief.items.length > 0 ? { items: mandate.brief.items } : {}),
-          visualMode: mandate.brief.visualMode,
-          voiceRequirements: mandate.brief.voiceRequirements,
-        },
-        addOns: {
-          ...(mandate.scopeFlexibility.hookVariants
-            ? {}
-            : { hookVariants: mandate.brief.hookVariants }),
-          languages: mandate.brief.languages,
-          aspectRatios: mandate.brief.aspectRatios,
-        },
-      };
       try {
+        if (mandate.referenceUploadId !== null && this.referenceUploadBaseUrl === null) {
+          throw new AppError("reference_upload_unavailable", "Uploaded product images are not configured for this Buyer", 503);
+        }
+        const uploadedReferenceUrl = mandate.referenceUploadId === null
+          ? null
+          : `${this.referenceUploadBaseUrl}/v1/uploads/${encodeURIComponent(mandate.referenceUploadId)}`;
+        const autoExecute = mandate.authorizationMode === "auto_within_budget";
+        const deadlineAt = mandate.deadlineMinutes === null
+          ? null
+          : new Date(Date.parse(delegation.createdAt) + (mandate.deadlineMinutes * 60_000)).toISOString();
+        if (deadlineAt !== null && Date.parse(deadlineAt) <= this.clock()) {
+          throw new AppError("delegation_deadline_expired", "The delegation deadline expired before campaign creation", 409);
+        }
+        const campaignInput = {
+          objective: mandate.objective,
+          objectiveFamily: mandate.objectiveFamily,
+          budgetSats: mandate.budgetSats,
+          ...(mandate.deadlineMinutes === null ? {} : { deadlineMinutes: mandate.deadlineMinutes }),
+          ...(deadlineAt === null ? {} : { deadlineAt }),
+          ...(mandate.deadlineMinutes === null ? {} : { deadlineType: mandate.deadlineType }),
+          preferences: { weights: mandate.decisionPriorities },
+          scopeFlexibility: mandate.scopeFlexibility,
+          autoExecute,
+          authorizationMode: mandate.authorizationMode,
+          delegationId,
+          decisionContext: {
+            customerRequest: delegation.input.request,
+            assumptions: mandate.assumptions,
+          },
+          brief: {
+            productName: mandate.brief.productName ?? mandate.subject,
+            description: mandate.brief.description ?? mandate.subject,
+            ...(uploadedReferenceUrl
+              ? { referenceUrl: uploadedReferenceUrl }
+              : (mandate.brief.referenceUrl ? { referenceUrl: mandate.brief.referenceUrl } : {})),
+            ...(mandate.brief.evidenceUrl ? { evidenceUrl: mandate.brief.evidenceUrl } : {}),
+            ...(mandate.brief.items.length > 0 ? { items: mandate.brief.items } : {}),
+            visualMode: mandate.brief.visualMode,
+            voiceRequirements: mandate.brief.voiceRequirements,
+          },
+          addOns: {
+            ...(mandate.scopeFlexibility.hookVariants
+              ? {}
+              : { hookVariants: mandate.brief.hookVariants }),
+            languages: mandate.brief.languages,
+            aspectRatios: mandate.brief.aspectRatios,
+          },
+        };
         const campaign = await this.buyer.createCampaign({
           input: campaignInput,
           idempotencyKey: `delegation-${delegationId}-v${mandate.version}`,

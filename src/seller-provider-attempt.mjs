@@ -48,6 +48,7 @@ export async function reserveSellerProviderAttempt({ path, identity, uncertainCo
 
 export async function withSellerOperationLock({ path, uncertainCode }, work) {
   const lockPath = `${path}.active`;
+  const recoveryPath = `${lockPath}.recovery`;
   const owner = { pid: process.pid, token: randomUUID(), startedAt: new Date().toISOString() };
   for (let tries = 0; tries < 3; tries += 1) {
     try {
@@ -72,8 +73,30 @@ export async function withSellerOperationLock({ path, uncertainCode }, work) {
       } catch (probeError) {
         if (probeError?.code !== "ESRCH") throw probeError;
       }
-      try { await rename(lockPath, `${lockPath}.stale-${randomUUID()}`); } catch (renameError) {
-        if (renameError?.code !== "ENOENT") throw renameError;
+      // A separate exclusive recovery claim prevents two workers from moving
+      // the same stale lock, or one worker from moving a newer live lock.
+      let recoveryOwned = false;
+      try {
+        await writeFile(recoveryPath, `${JSON.stringify(owner)}\n`, { mode: 0o600, flag: "wx" });
+        recoveryOwned = true;
+      } catch (recoveryError) {
+        if (recoveryError?.code !== "EEXIST") throw recoveryError;
+        throw new AppError(uncertainCode, "Another Seller worker is recovering this supplier operation", 503);
+      }
+      try {
+        let latest;
+        try { latest = JSON.parse(await readFile(lockPath, "utf8")); } catch (readError) {
+          if (readError?.code !== "ENOENT") {
+            throw new AppError(uncertainCode, "Seller production lock changed during recovery", 503);
+          }
+        }
+        if (latest?.token === current.token) {
+          try { await rename(lockPath, `${lockPath}.stale-${randomUUID()}`); } catch (renameError) {
+            if (renameError?.code !== "ENOENT") throw renameError;
+          }
+        }
+      } finally {
+        if (recoveryOwned) await unlink(recoveryPath);
       }
     }
   }
@@ -82,6 +105,16 @@ export async function withSellerOperationLock({ path, uncertainCode }, work) {
 
 export async function callSellerProviderTwice({ path, identity, uncertainCode, beforeCall, call, finalize = (value) => value }) {
   return await withSellerOperationLock({ path, uncertainCode }, async () => {
+    const returnedPath = `${path}.provider-returned.json`;
+    let returned;
+    try { returned = JSON.parse(await readFile(returnedPath, "utf8")); } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw new AppError(uncertainCode, "Seller supplier result marker is invalid", 503);
+      }
+    }
+    if (returned !== undefined) {
+      throw new AppError(uncertainCode, "Supplier already returned a result; reconcile Seller output before another paid call", 503);
+    }
     let priorError;
     for (let index = 0; index < 2; index += 1) {
     let attempt;
@@ -92,9 +125,10 @@ export async function callSellerProviderTwice({ path, identity, uncertainCode, b
       }
       throw error;
     }
+    let value;
     try {
       await beforeCall();
-      return await finalize(await call(attempt));
+      value = await call(attempt);
     } catch (error) {
       if (error?.code === "production_cancelled_before_billable_step") throw error;
       priorError = error;
@@ -102,7 +136,13 @@ export async function callSellerProviderTwice({ path, identity, uncertainCode, b
         throw new AppError(uncertainCode, "Seller exhausted its two internal supplier attempts; do not charge Buyer again", 503,
           { cause: error.message });
       }
+      continue;
     }
+    // Once a provider has responded, a validation or disk-write failure in
+    // finalize must not be interpreted as permission to call it again.
+    await writeFile(returnedPath, `${JSON.stringify({ ...identity, attempt, returnedAt: new Date().toISOString() })}\n`,
+      { mode: 0o600, flag: "wx" });
+    return await finalize(value);
     }
     throw priorError;
   });

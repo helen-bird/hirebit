@@ -100,6 +100,9 @@ const dockerRunner = workerMode === "docker" ? new DockerHypitRunner({
   dataDir,
   dockerBin: process.env.DOCKER_BIN ?? "/usr/local/bin/docker",
   image: process.env.HYPIT_WORKER_IMAGE ?? "agentic-hypit-worker:local",
+  ...(process.env.HYPIT_WORKER_ATTESTATION_FILE ? {
+    attestationFile: resolve(rootDir, process.env.HYPIT_WORKER_ATTESTATION_FILE),
+  } : {}),
 }) : null;
 const dockerIsolation = dockerRunner === null ? null : await dockerRunner.isolationStatus();
 const isolationVerified = workerMode === "docker"
@@ -121,6 +124,7 @@ const producer = new HypitAdapter({
   inputPreparer,
   videoProvider,
   referenceVisionProvider,
+  mediaBinDir: process.env.HYPIT_MEDIA_BIN_DIR ?? null,
   ...(typeof process.env.PUBLIC_DEMO_ORIGIN === "string" ? {
     trustedUploadOrigin: process.env.PUBLIC_DEMO_ORIGIN,
     trustedUploadDirectory: resolve(rootDir, process.env.BUYER_DATA_DIR ?? ".buyer", "uploads"),

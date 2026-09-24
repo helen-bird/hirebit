@@ -1,6 +1,10 @@
 # Production acceptance gate
 
-Every catalog product is fail-closed. `config/hypit-workflows.json` must keep `readyForSale: false` until all checks below pass for that exact workflow on the deployment machine.
+Every catalog product is fail-closed. Before first acceptance, a workflow must keep
+`readyForSale: false` until the checks below pass for that exact workflow. The checked-in
+`readyForSale: true` values record the original operator's 2026-09-20 acceptance; they do **not**
+certify a fresh checkout or machine. Runtime credential, provider and image-bound worker gates
+still block an unconfigured installation before payment.
 
 ## Required evidence per product
 
@@ -20,7 +24,7 @@ Every catalog product is fail-closed. `config/hypit-workflows.json` must keep `r
 - `ranking_listicle`: fixed presenter layout, ordered list points and one narration voice.
 - `two_person_podcast`: fixed two-host visual and two distinct dialogue voices.
 
-Only `proof_demo` accepts the explicit `product_only` visual mode. The other formats expose their fixed package layout as `package_default`. Single-voice formats accept the `narrator` role; the podcast accepts `host_a` and `host_b`. No package claims custom actors, avatars, presenter likenesses or generated characters.
+Only `proof_demo` accepts the explicit `product_only` visual mode. The other formats expose their fixed package layout as `package_default`. Single-voice formats accept the `narrator` role; the podcast accepts `host_a` and `host_b`. These four checks describe the fixed-layout package acceptance run from 2026-09-20. The later reference-guided Product Showcase path can generate a generic adult presenter or hands from a supplied product image; the performer is generic and independently generated. Its separate evidence record is in [Reference-guided video validation](REFERENCE_CLONE_ACCEPTANCE.md).
 
 Production availability is calculated from these gates. An unavailable product cannot be quoted or ordered, so configuration failure is discovered before Bitcoin payment.
 
@@ -82,20 +86,21 @@ secret environment absent, writes outside the job denied, job writes allowed, an
 offline Hypit build/export. Build `bld_20260920T124203831Z_17AD4843A5` produced a 16-second
 540×960 MP4 with audio. The attestation is invalidated automatically if the image ID changes.
 
-The four workflows are now marked `readyForSale: true`. The Hackathon Demo acceptance decision does
-not require exhaustive or maximum-matrix rendering: representative end-to-end package renders,
-Cartesian compiler tests, the 30-video ceiling and strict post-delivery validation are the agreed
-evidence. Runtime availability remains fail-closed and also requires the image-bound worker proof,
+The four workflows were marked `readyForSale: true` following that dated acceptance run. The
+reference-guided Veo path subsequently changed to two consecutive eight-second generations; the
+earlier fixed-layout outputs above validate only the workflows and versions exercised then. The
+Demo Day acceptance decision relied on representative package renders, Cartesian compiler tests,
+the 30-video ceiling and strict post-delivery validation rather than a maximum-matrix render.
+Runtime availability remains fail-closed and also requires the image-bound worker proof,
 DeepSeek credentials, approved Google TTS/ADC configuration and the GoBTC merchant configuration.
 
-Fresh GoBTC merchant and Buyer wallet registration attempts were still blocked by an nginx HTTP 503
-on 2026-09-21. The organizers confirmed in the official Discord that the failure matches their side,
-is not expected to recover before Demo Day, and may be represented with clearly disclosed simulated
-responses while the real integration remains unchanged.
+GoBTC merchant and Buyer wallet registration attempts returned nginx HTTP 503 on 2026-09-21.
+The organizers confirmed that outage in the official Discord and approved clearly disclosed simulated
+responses for that Demo Day. This dated observation does not establish the provider's current status.
 
-`PAYMENT_MODE=demo` therefore replaces only the external provider boundary with interface-compatible
+`PAYMENT_MODE=demo` replaces only the external provider boundary with interface-compatible
 simulated clients. It exercises the implemented mandate, budget reservation, order, idempotency,
-payment gate, Hypit production, validation and campaign packaging flow. It is explicitly non-mainnet,
+payment gate, Hypit production, validation and campaign packaging flow in preview mode. It is explicitly non-mainnet,
 uses a non-payable recipient marker, creates no real PSBT or chain transaction, and must not be cited
 as evidence of successful GoBTC registration, mainnet submission, settlement or on-chain proof.
 

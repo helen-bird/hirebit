@@ -50,6 +50,12 @@ test("quote accepts only creative requirements the selected package can deliver"
   });
   assert.equal(proof.brief.visualMode, "product_only");
   assert.equal(proof.brief.voiceRequirements[0].pace, "slow");
+  const usVoice = calculateQuote({
+    productId: "proof_demo",
+    brief: { voiceRequirements: [{ role: "narrator", style: "energetic", pace: "normal", accent: "United States English" }] },
+    addOns: { hookVariants: 1, languages: ["en-US"], aspectRatios: ["9:16"] },
+  });
+  assert.equal(usVoice.brief.voiceRequirements[0].accent, "United States English");
   assert.throws(() => calculateQuote({
     productId: "creator_pitch",
     brief: { visualMode: "product_only", voiceRequirements: [] },

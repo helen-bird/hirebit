@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import ffmpegStatic from "ffmpeg-static";
 
 import { AppError } from "./errors.mjs";
+import { probeMedia } from "./media-probe.mjs";
 import { REFERENCE_VISION_PLAN_FORMAT, validateReferenceVisionPlan } from "./reference-vision-planner.mjs";
 import { assertProductionMaySpend } from "./production-cancellation.mjs";
 import { withSellerOperationLock } from "./seller-provider-attempt.mjs";
@@ -16,6 +17,7 @@ const FORMAT = "seller.google-veo-input@1";
 const LEDGER_FORMAT = "seller.google-veo-ledger@1";
 const ALLOWED_MODEL = "veo-3.1-lite-generate-001";
 const DEFAULT_GENERATION_WINDOW_MS = 60 * 60 * 1000;
+const NEGATIVE_PROMPT = "Invented or misspelled text, fake brand logos, gibberish lettering, captions, subtitles, watermarks, price tags, UI elements, extra hands, extra products.";
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -121,7 +123,7 @@ export class GoogleVeoVideoProvider {
     };
   }
 
-  async prepare({ jobDir, order, quote, commissionPath, productionInputs = null, referenceAdaptation = null }) {
+  async prepare({ jobDir, order, quote, commissionPath, referenceAdaptation = null }) {
     const readiness = this.readiness();
     if (!readiness.configured) throw new AppError("google_veo_unavailable", readiness.issue, 503);
     const outputRoot = join(jobDir, "veo-inputs");
@@ -169,7 +171,6 @@ export class GoogleVeoVideoProvider {
 
     const product = safeText(quote.brief?.productName ?? quote.brief?.subject, "the supplied product", 100);
     const objective = safeText(quote.brief?.description ?? quote.brief?.objective, "show the product clearly in use", 220);
-    const headline = safeText(productionInputs?.variants?.[0]?.headline, "See the useful detail", 100);
     const referenceSplitAt = referencePlan === null
       ? 0
       : Math.max(1, Math.ceil(referencePlan.reference.actionSequence.length / 2));
@@ -188,7 +189,7 @@ export class GoogleVeoVideoProvider {
       ].join(" ");
     const prompt = [
       "Create an eight-second vertical social-commerce product video from the supplied real product image.",
-      `Product: ${product}. Campaign goal: ${objective}. Creative hook: ${headline}.`,
+      `Product: ${product}. Campaign goal: ${objective}. This is silent visual footage; Hypit adds all approved words later.`,
       `Start with a clean macro product reveal. ${demonstration} ${referencePlan === null
         ? "Finish with a stable product hero pose."
         : "Complete only this first-half choreography and end on a natural moving pose that can continue into the next shot; do not perform the final reveal yet."}`,
@@ -243,7 +244,11 @@ export class GoogleVeoVideoProvider {
         outputRoot,
         outputPath: secondPath,
       }));
-      await this.#concatenateSegments(segments.map((item) => item.path), outputPath);
+      await this.#concatenateSegments(
+        segments.map((item) => item.path),
+        outputPath,
+        Number(referenceAdaptation.source?.durationSeconds),
+      );
     }
     const bytes = await readFile(outputPath);
     const promptSha256 = sha256(Buffer.from(segments.map((item) => item.promptSha256).join(":")));
@@ -264,7 +269,10 @@ export class GoogleVeoVideoProvider {
         mediaType: "video/mp4",
         sha256: sha256(bytes),
         bytes: bytes.length,
-        durationSeconds: 8 * segments.length,
+        durationSeconds: Number.isFinite(Number(referenceAdaptation?.source?.durationSeconds))
+          && Number(referenceAdaptation?.source?.durationSeconds) > 0
+          ? Math.min(16, Math.max(8, Number(referenceAdaptation.source.durationSeconds)))
+          : 8 * segments.length,
         aspectRatio: "9:16",
         resolution: "720p",
         sampleCount: 1,
@@ -294,7 +302,7 @@ export class GoogleVeoVideoProvider {
     prompt, image, imageMediaType, imageSha256, outputRoot, outputPath,
   }) {
     const receiptPath = join(outputRoot, `receipt-${segmentIndex}.json`);
-    const promptSha256 = sha256(Buffer.from(prompt));
+    const promptSha256 = sha256(Buffer.from(JSON.stringify({ prompt, negativePrompt: NEGATIVE_PROMPT })));
     let receipt = await readJson(receiptPath);
     if (receipt !== null && (receipt.segmentIndex !== segmentIndex || receipt.promptSha256 !== promptSha256
       || receipt.inputImageSha256 !== imageSha256 || receipt.commissionSha256 !== commissionSha256)) {
@@ -336,6 +344,7 @@ export class GoogleVeoVideoProvider {
           parameters: {
             aspectRatio: "9:16", durationSeconds: 8, sampleCount: 1, resolution: "720p",
             resizeMode: "crop", personGeneration: "allow_adult", generateAudio: false, enhancePrompt: true,
+            negativePrompt: NEGATIVE_PROMPT,
           },
         });
       } catch (error) {
@@ -396,18 +405,26 @@ export class GoogleVeoVideoProvider {
     }
   }
 
-  async #concatenateSegments(paths, outputPath) {
+  async #concatenateSegments(paths, outputPath, targetDurationSeconds) {
     const temporary = `${outputPath}.tmp-${process.pid}.mp4`;
+    const target = Number.isFinite(targetDurationSeconds) && targetDurationSeconds > 0
+      ? Math.min(16, Math.max(8, targetDurationSeconds)) : 16;
     try {
+      const sourceDurations = await Promise.all(paths.map(async (path) => Number((await probeMedia(path)).format?.duration)));
+      if (sourceDurations.some((value) => !Number.isFinite(value) || value <= 0)) {
+        throw new AppError("google_veo_segment_duration_invalid", "Veo returned a segment without a valid duration", 502);
+      }
+      const tempo = (target / sourceDurations.reduce((sum, value) => sum + value, 0)).toFixed(6);
       await execute(ffmpegStatic, [
         "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
         "-i", paths[0], "-i", paths[1],
-        "-filter_complex", "[0:v]setpts=PTS-STARTPTS[v0];[1:v]setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[v]",
-        "-map", "[v]", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-filter_complex", `[0:v]setpts=PTS-STARTPTS[v0];[1:v]setpts=PTS-STARTPTS[v1];[v0][v1]concat=n=2:v=1:a=0[joined];[joined]setpts=(PTS-STARTPTS)*${tempo}[v]`,
+        "-map", "[v]", "-t", String(target), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
         "-pix_fmt", "yuv420p", "-movflags", "+faststart", temporary,
       ], { timeout: 180_000, maxBuffer: 2 * 1024 * 1024 });
       await rename(temporary, outputPath);
     } catch (error) {
+      if (error instanceof AppError) throw error;
       throw new AppError("google_veo_segment_assembly_failed", "Could not assemble the two Veo generations", 503, { cause: error.message });
     }
   }

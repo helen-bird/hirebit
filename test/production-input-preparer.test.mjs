@@ -315,6 +315,27 @@ test("Google Cloud TTS rejects a regional voice fallback that does not satisfy t
   }), (error) => error.code === "voice_language_unsupported");
 });
 
+test("Google Cloud TTS maps United States English to the supported en-US voice", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "google-tts-us-alias-"));
+  const provider = new GoogleCloudTtsVoiceProvider({
+    projectId: "test-project",
+    commercialUseApproved: true,
+    accessTokenProvider: async () => "test-token",
+    fetchImpl: async (url) => url.includes("/v1/voices")
+      ? new Response(JSON.stringify({ voices: [{ name: "en-US-Neural2-A", languageCodes: ["en-US"] }] }), { status: 200 })
+      : new Response(JSON.stringify({ audioContent: Buffer.alloc(2048, 1).toString("base64") }), { status: 200 }),
+  });
+  const result = await provider.synthesize({
+    text: "Precise cleanup for makeup users.",
+    language: "en-US",
+    role: "narrator",
+    destination: join(directory, "voice.wav"),
+    requirements: { role: "narrator", style: "energetic", pace: "normal", accent: "United States English" },
+  });
+  assert.equal(result.appliedVoice.locale, "en-US");
+  assert.equal(result.voiceId, "en-US-Neural2-A");
+});
+
 test("production inputs record unmet voice requirements instead of silently claiming success", async () => {
   const input = await commissionFixture();
   const preparer = new ProductionInputPreparer({

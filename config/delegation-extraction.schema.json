@@ -48,7 +48,7 @@
     },
     "deadlineType": {
       "type": ["string", "null"],
-      "enum": ["hard", "preferred", null]
+      "enum": ["hard", "preferred", "none", null]
     },
     "decisionPriorities": {
       "type": "object",

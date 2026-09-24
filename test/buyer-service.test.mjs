@@ -567,6 +567,69 @@ test("uncertain submission is reconciled without blind resubmission", async () =
   assert.equal(service.audit(campaign.id).filter((event) => event.type === "payment.submission_uncertain").length, 1);
 });
 
+test("a terminal unpaid Seller status after a Buyer submission receipt keeps the spend reserved", async () => {
+  const { service, seller, wallet } = await fixture({ completed: false });
+  seller.syncOrder = async () => ({
+    id: "order-1", amountSats: 1300, state: "payment_expired",
+    payment: { id: "payment-1", amountSats: "1300", btcAddress: "bc1qmerchant",
+      status: "expired", authorization: "pending", settlement: "pending" },
+    production: { state: "locked", result: null },
+  });
+  const campaign = await service.createCampaign({
+    input: { objective: "conversion", budgetSats: 3000, autoExecute: true },
+    idempotencyKey: "buyer-submitted-then-expired-conflict",
+  });
+  assert.equal(campaign.paymentAttempt.status, "submitted");
+  assert.equal(campaign.state, "payment_uncertain");
+  assert.equal(campaign.spendReservation.status, "uncertain");
+  assert.equal(campaign.lastError.code, "payment_status_conflicts_submission");
+  await service.executeCampaign(campaign.id);
+  assert.equal(wallet.submitted, 1);
+});
+
+test("a cancelled invoice after uncertain submission cannot free the Buyer's allocation", async () => {
+  const { service, seller, wallet, store } = await fixture({ uncertain: true, completed: false });
+  const cancelledOrder = {
+    id: "order-1", amountSats: 1300, state: "cancelled_unpaid",
+    payment: { id: "payment-1", amountSats: "1300", btcAddress: "bc1qmerchant",
+      status: "cancelled", authorization: "pending", settlement: "pending" },
+    production: { state: "stopped", result: null },
+    cancellation: { state: "cancelled_unpaid", refund: { state: "not_issued", amountSats: null } },
+  };
+  let polls = 0;
+  seller.syncOrder = async () => { polls += 1; return cancelledOrder; };
+  seller.requestCancellation = async () => cancelledOrder;
+  const campaign = await service.createCampaign({
+    input: { objective: "conversion", budgetSats: 3000, autoExecute: true },
+    idempotencyKey: "buyer-uncertain-submission-then-cancelled",
+  });
+  assert.equal(campaign.state, "payment_uncertain");
+  const cancelled = await service.cancelCampaign(campaign.id);
+  assert.equal(cancelled.state, "cancellation_pending");
+  assert.equal(cancelled.spendReservation.status, "uncertain");
+  assert.equal(wallet.submitted, 1);
+  await store.transaction((state) => {
+    state.campaigns[campaign.id].sellerOrder.payment.nextCheckAt = "2027-01-15T08:05:00.000Z";
+  });
+  const previousPolls = polls;
+  await service.pollOnce();
+  assert.equal(polls, previousPolls);
+  await store.transaction((state) => {
+    state.campaigns[campaign.id].sellerOrder.payment.nextCheckAt = "2027-01-15T07:59:00.000Z";
+  });
+  seller.syncOrder = async () => ({
+    ...cancelledOrder,
+    state: "refund_review_required",
+    payment: { ...cancelledOrder.payment, status: "paid", authorization: "authorized" },
+    cancellation: { state: "refund_review_required", refund: { state: "not_issued", amountSats: 1300 } },
+  });
+  const latePaid = await service.syncCampaign(campaign.id);
+  assert.equal(latePaid.state, "refund_review_required");
+  assert.equal(latePaid.spentSats, 0);
+  assert.equal(latePaid.spendReservation.status, "uncertain");
+  assert.equal(latePaid.cancellation.refund.amountSats, 1300);
+});
+
 test("a paid invoice without this Buyer's submission receipt is not charged to the Buyer", async () => {
   const { service, store, wallet } = await fixture();
   const campaign = await service.createCampaign({
@@ -618,6 +681,73 @@ test("external payment review does not erase a requested cancellation or invent 
   assert.equal(reviewed.cancellation.state, "refund_review_required");
   assert.equal(reviewed.paymentOriginReviewAt, "2027-01-15T08:00:00.000Z");
   assert.equal(reviewed.spentSats, 0);
+});
+
+test("an older Seller poll cannot roll back a cancellation review", async () => {
+  const { service, store, seller } = await fixture();
+  const campaign = await service.createCampaign({
+    input: { objective: "conversion", budgetSats: 3000 },
+    idempotencyKey: "buyer-stale-cancellation-poll",
+  });
+  await store.transaction((state) => {
+    const current = state.campaigns[campaign.id];
+    current.state = "refund_review_required";
+    current.cancellation = {
+      requestedAt: "2027-01-15T07:00:00.000Z",
+      state: "refund_review_required",
+      refund: { state: "not_issued", amountSats: 1300 },
+    };
+    current.sellerOrder = {
+      id: "order-1", amountSats: 1300, state: "refund_review_required",
+      payment: { id: "payment-1", amountSats: "1300", btcAddress: "bc1qmerchant", authorization: "authorized", settlement: "pending" },
+      production: { state: "stopped" },
+      cancellation: { state: "refund_review_required", refund: { state: "not_issued", amountSats: 1300 } },
+    };
+    current.paymentAttempt = {
+      status: "submitted",
+      prepared: { paymentId: "payment-1", validation: { feeSats: 25 } },
+      receipt: { instantReceiptId: "platform-receipt-1" },
+    };
+    current.spentSats = 1325;
+  });
+  seller.syncOrder = async () => ({
+    id: "order-1", amountSats: 1300, state: "paid",
+    payment: { id: "payment-1", amountSats: "1300", btcAddress: "bc1qmerchant", authorization: "authorized", settlement: "pending" },
+    production: { state: "locked" },
+  });
+  const result = await service.syncCampaign(campaign.id);
+  assert.equal(result.state, "refund_review_required");
+  assert.equal(result.cancellation.refund.amountSats, 1300);
+  assert.equal(result.sellerOrder.cancellation.state, "refund_review_required");
+});
+
+test("repeating cancellation during refund review cannot downgrade the review on Seller outage", async () => {
+  const { service, store, seller } = await fixture();
+  const campaign = await service.createCampaign({
+    input: { objective: "conversion", budgetSats: 3000 },
+    idempotencyKey: "buyer-repeat-refund-review-cancellation",
+  });
+  await store.transaction((state) => {
+    const current = state.campaigns[campaign.id];
+    current.state = "refund_review_required";
+    current.cancellation = {
+      requestedAt: "2027-01-15T07:00:00.000Z",
+      state: "refund_review_required",
+      refund: { state: "not_issued", amountSats: 1300 },
+    };
+    current.sellerOrder = {
+      id: "order-1", amountSats: 1300, state: "refund_review_required",
+      payment: { id: "payment-1", amountSats: "1300", btcAddress: "bc1qmerchant", authorization: "authorized", settlement: "pending" },
+      production: { state: "stopped" },
+      cancellation: { state: "refund_review_required", refund: { state: "not_issued", amountSats: 1300 } },
+    };
+  });
+  seller.requestCancellation = async () => {
+    throw Object.assign(new Error("temporary outage"), { code: "seller_unavailable" });
+  };
+  const repeated = await service.cancelCampaign(campaign.id);
+  assert.equal(repeated.state, "refund_review_required");
+  assert.equal(repeated.cancellation.refund.amountSats, 1300);
 });
 
 test("a timed-out Buyer submission followed by paid remains unattributed until manually reconciled", async () => {

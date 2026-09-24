@@ -128,7 +128,10 @@ export class CampaignCompletionService {
     return resolve(this.dataDir, "campaign-packages", safeName(campaignId));
   }
 
-  async complete(campaign) {
+  async complete(campaign, { revision = null } = {}) {
+    if (revision !== null && !/^r(?:[2-9]|[1-9]\d{1,4})$/u.test(revision)) {
+      throw new AppError("invalid_delivery_revision", "Delivery revision must be r2 or later");
+    }
     const order = campaign.sellerOrder;
     if (order?.state !== "completed" || order.production?.state !== "completed") {
       throw new AppError("fulfillment_not_complete", "Campaign package requires completed Seller fulfillment", 409);
@@ -136,7 +139,17 @@ export class CampaignCompletionService {
     const artifacts = order.production.result?.artifacts ?? [];
     if (artifacts.length === 0) throw new AppError("fulfillment_has_no_artifacts", "Seller returned no campaign artifacts", 502);
 
-    const root = this.packageDirectory(campaign.id);
+    const base = this.packageDirectory(campaign.id);
+    const prefix = revision === null ? "" : `revisions/${revision}/`;
+    const root = revision === null ? base : join(base, "revisions", revision);
+    if (revision !== null) {
+      await mkdir(join(base, "revisions"), { recursive: true, mode: 0o700 });
+      try { await mkdir(root, { mode: 0o700 }); }
+      catch (error) {
+        if (error.code === "EEXIST") throw new AppError("delivery_revision_exists", "Delivery revision already exists", 409);
+        throw error;
+      }
+    }
     const creativeDir = join(root, "creatives");
     await mkdir(creativeDir, { recursive: true, mode: 0o700 });
     await chmod(root, 0o700);
@@ -154,8 +167,8 @@ export class CampaignCompletionService {
           throw new AppError("seller_artifact_integrity_failed", "Seller artifact differs from the completed production record", 502);
         }
       }
-      const path = `creatives/${name}`;
-      await atomicWrite(join(root, path), downloaded.data);
+      const path = `${prefix}creatives/${name}`;
+      await atomicWrite(join(creativeDir, name), downloaded.data);
       creativeFiles.push({
         name,
         path,
@@ -164,7 +177,7 @@ export class CampaignCompletionService {
         bytes: downloaded.data.byteLength,
         sha256: downloadedSha256,
         specification: artifact.specification ?? null,
-        absolutePath: join(root, path),
+        absolutePath: join(creativeDir, name),
       });
     }
 
@@ -222,8 +235,8 @@ export class CampaignCompletionService {
       await atomicWrite(join(root, document.name), data);
       documentFiles.push({
         name: document.name,
-        path: document.name,
-        url: fileUrl(campaign.id, document.name),
+        path: `${prefix}${document.name}`,
+        url: fileUrl(campaign.id, `${prefix}${document.name}`),
         mediaType: document.mediaType,
         bytes: data.byteLength,
         sha256: sha256(data),
@@ -239,14 +252,15 @@ export class CampaignCompletionService {
     await atomicWrite(join(root, "manifest.json"), manifestData);
     const manifestFile = {
       name: "manifest.json",
-      path: "manifest.json",
-      url: fileUrl(campaign.id, "manifest.json"),
+      path: `${prefix}manifest.json`,
+      url: fileUrl(campaign.id, `${prefix}manifest.json`),
       mediaType: "application/json",
       bytes: manifestData.byteLength,
       sha256: sha256(manifestData),
     };
     return {
       state: "completed",
+      ...(revision === null ? {} : { revision }),
       generatedAt: summary.generatedAt,
       summary,
       paymentProof,
@@ -257,29 +271,32 @@ export class CampaignCompletionService {
 
   async refreshPaymentProof(campaign, campaignPackage) {
     if (campaignPackage?.state !== "completed") throw new AppError("package_not_ready", "Campaign package is not complete", 409);
-    const root = this.packageDirectory(campaign.id);
+    const prefix = campaignPackage.revision ? `revisions/${campaignPackage.revision}/` : "";
+    const root = campaignPackage.revision
+      ? join(this.packageDirectory(campaign.id), "revisions", campaignPackage.revision)
+      : this.packageDirectory(campaign.id);
     const next = structuredClone(campaignPackage);
     const paymentProof = paymentProofFor(campaign);
     const proofData = Buffer.from(`${JSON.stringify(paymentProof, null, 2)}\n`, "utf8");
     await atomicWrite(join(root, "payment-proof.json"), proofData);
-    const proofEntry = next.files.find((item) => item.path === "payment-proof.json");
+    const proofEntry = next.files.find((item) => item.path === `${prefix}payment-proof.json`);
     Object.assign(proofEntry, { bytes: proofData.byteLength, sha256: sha256(proofData) });
     next.paymentProof = paymentProof;
 
-    const creativeFiles = next.files.filter((item) => item.path.startsWith("creatives/"));
+    const creativeFiles = next.files.filter((item) => item.path.startsWith(`${prefix}creatives/`));
     const reportData = Buffer.from(markdown(next.summary, next.testingPlan, paymentProof, creativeFiles), "utf8");
     await atomicWrite(join(root, "campaign-report.md"), reportData);
-    const reportEntry = next.files.find((item) => item.path === "campaign-report.md");
+    const reportEntry = next.files.find((item) => item.path === `${prefix}campaign-report.md`);
     Object.assign(reportEntry, { bytes: reportData.byteLength, sha256: sha256(reportData) });
 
     next.settlementUpdatedAt = new Date(this.clock()).toISOString();
-    const manifestEntry = next.files.find((item) => item.path === "manifest.json");
+    const manifestEntry = next.files.find((item) => item.path === `${prefix}manifest.json`);
     const manifest = {
       version: 1,
       campaignId: campaign.id,
       generatedAt: next.generatedAt,
       settlementUpdatedAt: next.settlementUpdatedAt,
-      files: next.files.filter((item) => item.path !== "manifest.json"),
+      files: next.files.filter((item) => item.path !== `${prefix}manifest.json`),
     };
     const manifestData = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     await atomicWrite(join(root, "manifest.json"), manifestData);

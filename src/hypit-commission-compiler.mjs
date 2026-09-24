@@ -160,6 +160,27 @@ function copyFor(quote, hookIndex) {
   return { productName, objective, hook, items };
 }
 
+export function compactDisplayHook(hook, productName) {
+  const maxCharacters = 22;
+  if ([...hook].length <= maxCharacters) return hook;
+  const colonPhrases = hook.split(":").map((part) => part.trim())
+    .filter((part) => [...part].length >= 10 && [...part].length <= maxCharacters)
+    .sort((left, right) => [...right].length - [...left].length);
+  if (colonPhrases.length > 0) return colonPhrases[0];
+  const phrases = hook.split(/[:,;·—–]/u).map((part) => part.trim())
+    .filter((part) => [...part].length >= 10 && [...part].length <= maxCharacters)
+    .sort((left, right) => [...right].length - [...left].length);
+  if (phrases.length > 0) return phrases[0];
+  const words = hook.trim().split(/\s+/u);
+  let compact = "";
+  for (const word of words) {
+    const next = compact ? `${compact} ${word}` : word;
+    if ([...next].length > maxCharacters) break;
+    compact = next;
+  }
+  return compact || [...productName].slice(0, maxCharacters).join("").trim();
+}
+
 function encodedJson(value) {
   return `${TEXT_JSON_PREFIX}${Buffer.from(JSON.stringify(value), "utf8").toString("base64url")}`;
 }
@@ -430,13 +451,18 @@ function authorSource({
       return `    <audio:Item id="${ids(`voice-item-${index + 1}`)}" source={${ids(`voice-${index + 1}-media`)}.media} start="${start.toFixed(2)}s" end="${end.toFixed(2)}s" playback="once" gain="1" fade-in="2f" fade-out="4f"/>`;
     }).join("\n");
     const itemWindow = duration / 3;
-    const referenceCopyValues = [copy.hook, ...copy.items.slice(0, 3), copy.objective, copy.productName];
+    // The mandate objective may be an internal classification slug rather than
+    // customer-facing copy. Keep a visual beat instead of rendering it.
+    const referenceCopyValues = [compactDisplayHook(copy.hook, copy.productName),
+      ...copy.items.slice(0, 3), null, copy.productName];
     const placement = { top: "title-frame", center: "center-frame", bottom: "caption-frame" };
     const referenceTextItems = referenceTimeline === null ? null : referenceTimeline.map((shot, index) => {
+      const displayCopy = referenceCopyValues[index];
+      if (displayCopy === null) return "";
       const textStart = Math.min(shot.end - 0.08, shot.start + 0.08).toFixed(3);
       const textEnd = Math.max(Number(textStart) + 0.04, shot.end - 0.04).toFixed(3);
       const style = shot.emphasis === "hook" || shot.emphasis === "cta" ? "title-style" : "caption-style";
-      return `    <typo:Area id="${ids(`reference-copy-${index + 1}`)}" placement={${ids(placement[shot.copyPlacement])}} style={${ids(style)}} motion={${ids("arrive")}} start="${textStart}s" end="${textEnd}s">${xml(referenceCopyValues[index] ?? copy.productName)}</typo:Area>`;
+      return `    <typo:Area id="${ids(`reference-copy-${index + 1}`)}" placement={${ids(placement[shot.copyPlacement])}} style={${ids(style)}} motion={${ids("arrive")}} start="${textStart}s" end="${textEnd}s">${xml(displayCopy ?? copy.productName)}</typo:Area>`;
     }).join("\n");
     return `
   <space:Canvas id="${ids("canvas")}" width="${dimensions.width}" height="${dimensions.height}"/>

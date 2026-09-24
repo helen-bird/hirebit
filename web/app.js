@@ -3,13 +3,63 @@ const stageContent = $("#stage-content");
 const actionBar = $("#action-bar");
 const activeId = $("#active-id");
 const recentList = $("#recent-list");
+const workspace = $("#demo-workspace");
+const workspaceResizer = $("#workspace-resizer");
 let active = null;
 let pollTimer;
 let selectedPurchaseMode = "auto_within_budget";
+let workspacePhase = "brief";
+let briefShare = 0.76;
 let reusableReferenceUploadId = null;
 let previewObjectUrl = null;
 const selectedDecisionSteps = new Map();
 const selectedDecisionPages = new Map();
+
+function resizeWorkspace() {
+  if (window.matchMedia("(max-width: 760px)").matches) return;
+  const available = workspace.clientWidth - workspaceResizer.offsetWidth - 16;
+  if (available <= 0) return;
+  const minimum = Math.min(270, available * 0.42);
+  const briefWidth = Math.max(minimum, Math.min(available - minimum, available * briefShare));
+  briefShare = briefWidth / available;
+  workspace.style.setProperty("--brief-width", `${briefWidth}px`);
+  workspaceResizer.setAttribute("aria-valuenow", String(Math.round(briefShare * 100)));
+}
+
+function focusWorkspace(phase) {
+  if (workspacePhase === phase) return;
+  workspacePhase = phase;
+  briefShare = phase === "brief" ? 0.76 : 0.24;
+  workspace.dataset.focus = phase;
+  resizeWorkspace();
+}
+
+workspaceResizer.addEventListener("pointerdown", (event) => {
+  if (window.matchMedia("(max-width: 760px)").matches) return;
+  event.preventDefault();
+  workspaceResizer.setPointerCapture(event.pointerId);
+  workspaceResizer.classList.add("dragging");
+});
+workspaceResizer.addEventListener("pointermove", (event) => {
+  if (!workspaceResizer.hasPointerCapture(event.pointerId)) return;
+  const available = workspace.clientWidth - workspaceResizer.offsetWidth - 16;
+  briefShare = (event.clientX - workspace.getBoundingClientRect().left - 8) / available;
+  resizeWorkspace();
+});
+workspaceResizer.addEventListener("pointerup", (event) => {
+  if (workspaceResizer.hasPointerCapture(event.pointerId)) workspaceResizer.releasePointerCapture(event.pointerId);
+  workspaceResizer.classList.remove("dragging");
+});
+workspaceResizer.addEventListener("pointercancel", () => workspaceResizer.classList.remove("dragging"));
+workspaceResizer.addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  if (event.key === "Home") briefShare = 0.2;
+  else if (event.key === "End") briefShare = 0.8;
+  else briefShare += event.key === "ArrowRight" ? 0.04 : -0.04;
+  resizeWorkspace();
+});
+window.addEventListener("resize", resizeWorkspace);
 
 const DEMO_PRODUCT_IMAGE_URL = "/console/demo-product.jpeg";
 const DEMO_VIDEO_URL = "https://www.tiktok.com/@bilintinamakeup/video/6798977602963918085";
@@ -122,6 +172,7 @@ async function demoProductImage() {
 function selectPreset(name) {
   const preset = presets[name];
   if (!preset) return;
+  focusWorkspace("brief");
   selectedPurchaseMode = preset.purchaseMode;
   $("#request").value = preset.request;
   $("#platform").value = preset.platform;
@@ -278,7 +329,9 @@ function renderComparisonProgress(delegation) {
     ["02", "Compare", "Exploring services, scope and price", "active"],
     ["03", "Protect", "Ruling out options outside your limits", "pending"],
     ["04", "Recommend", "AI weighs campaign value and fit", "pending"],
-    ["05", "Purchase", "Confirm the exact choice before buying", "pending"],
+    ["05", "Purchase", delegation.input?.context?.purchaseMode === "confirm_before_purchase"
+      ? "Review the chosen plan before buying"
+      : "Buy the best eligible plan within your budget", "pending"],
   ];
   for (const [number, label, detail, state] of steps) {
     const step = node("article", `decision-step ${state}`);
@@ -327,6 +380,7 @@ const stateLabels = {
   execution_paused: "ACTION NEEDED",
   payment_origin_review_required: "PAYMENT NEEDS REVIEW",
   campaign_failed: "PLAN NEEDS A CHANGE",
+  campaign_creation_failed: "COMPARISON PAUSED",
   completed: "CAMPAIGN READY",
   cancelled: "ORDER CANCELLED",
   cancellation_pending: "STOP REQUEST IN PROGRESS",
@@ -336,6 +390,7 @@ const stateLabels = {
 };
 
 function restoreBrief(delegation) {
+  focusWorkspace("brief");
   const context = delegation.input?.context ?? {};
   selectedPurchaseMode = context.purchaseMode === "confirm_before_purchase"
     ? "confirm_before_purchase"
@@ -1052,7 +1107,7 @@ function renderPayment(delegation) {
   copy.append(node("small", "", `${servicePrice.toLocaleString()} service + ${feeSats.toLocaleString()} ${simulated ? "simulated" : "network"} fee · within the quoted maximum`));
   card.append(copy, node("div", "amount", `${totalSats.toLocaleString()} sats`));
   stageContent.append(card);
-  if (simulated) stageContent.append(node("div", "notice neutral", "GOBTC SERVICE UNAVAILABLE · Provider responses are simulated. No Bitcoin moves and no txid is claimed."));
+  if (simulated) stageContent.append(node("div", "notice neutral", "Payment preview · GoBTC responses simulated · BTC transferred: 0"));
   if (campaign.lastError) stageContent.append(node("div", "notice", "Payment needs attention. The agent will keep checking safely."));
 }
 
@@ -1115,21 +1170,48 @@ function renderCampaignFailed(delegation) {
   showActions(edit);
 }
 
+function renderCampaignCreationFailed(delegation) {
+  updateStages(delegation, "decision");
+  const imageUnavailable = delegation.lastError?.code === "reference_upload_unavailable";
+  const deadlineExpired = delegation.lastError?.code === "delegation_deadline_expired";
+  stageContent.append(title("COMPARISON PAUSED", deadlineExpired
+    ? "The requested deadline has passed"
+    : imageUnavailable ? "Your product image connection needs attention" : "We couldn’t start the package comparison"));
+  stageContent.append(node("p", "flow-guidance", deadlineExpired
+    ? "No order was placed. Edit the brief with a new delivery deadline, then start again."
+    : imageUnavailable
+      ? "Your brief and image are saved. Retry once the image connection is restored, or edit the brief and start again."
+      : "Your approved brief is saved. Retry the same comparison without placing a new order, or edit the brief and start again."));
+  const retry = node("button", "button confirm", "Retry comparison");
+  retry.addEventListener("click", async () => {
+    retry.disabled = true;
+    await act(`/v1/delegations/${encodeURIComponent(delegation.id)}/confirm`, { approved: true });
+  });
+  const edit = node("button", "button secondary", "Edit brief");
+  edit.addEventListener("click", () => restoreBrief(delegation));
+  showActions(...(deadlineExpired ? [edit] : [edit, retry]));
+}
+
 function renderProduction(delegation) {
   const campaign = delegation.campaign;
   const production = campaign.sellerOrder?.production ?? {};
-  const isProducing = production.state === "producing";
+  const isFailed = campaign.state === "fulfillment_failed";
+  const isProducing = !isFailed && production.state === "producing";
   const turnaround = campaign.decision?.selected?.quote?.estimatedTurnaroundMinutes;
-  stageContent.append(title("VIDEO PRODUCTION", isProducing ? "Your campaign is being created" : "Production is getting ready"));
+  stageContent.append(title(isFailed ? "PRODUCTION PAUSED" : "VIDEO PRODUCTION",
+    isFailed ? "Your video needs another attempt" : isProducing ? "Your campaign is being created" : "Production is getting ready"));
   const recap = planRecap(campaign);
   if (recap) stageContent.append(recap);
   const live = node("section", `production-live${isProducing ? " active" : ""}`);
   const activity = node("div", "production-activity");
-  activity.append(node("span", "production-spinner"), node("span", "production-live-label", isProducing ? "PRODUCTION IN PROGRESS" : "QUEUED FOR PRODUCTION"));
+  if (!isFailed) activity.append(node("span", "production-spinner"));
+  activity.append(node("span", "production-live-label", isFailed ? "PRODUCTION PAUSED" : isProducing ? "PRODUCTION IN PROGRESS" : "QUEUED FOR PRODUCTION"));
   const copy = node("div", "production-live-copy");
   copy.append(
-    node("h3", "", isProducing ? "Please wait — we’re making your video" : "Your production slot is ready"),
-    node("p", "", isProducing
+    node("h3", "", isFailed ? "We couldn’t finish this attempt" : isProducing ? "Please wait — we’re making your video" : "Your production slot is ready"),
+    node("p", "", isFailed
+      ? "Your existing order and payment are preserved. You can retry production without buying again, or ask for a human review."
+      : isProducing
       ? "The reference is being translated into new product action, then assembled and checked by Hypit. This page refreshes automatically."
       : "Production will begin automatically. No further action is needed."),
   );
@@ -1137,12 +1219,12 @@ function renderProduction(delegation) {
   progress.append(node("i"));
   const meta = node("div", "production-meta");
   meta.append(
-    node("span", "", isProducing ? "Creating · assembling · validating" : "Waiting to start"),
-    node("strong", "", Number.isSafeInteger(turnaround) ? `Estimate: up to ${turnaround} min` : "We’ll update this page when ready"),
+    node("span", "", isFailed ? "Waiting for your choice" : isProducing ? "Creating · assembling · validating" : "Waiting to start"),
+    node("strong", "", isFailed ? "No new payment needed" : Number.isSafeInteger(turnaround) ? `Estimate: up to ${turnaround} min` : "We’ll update this page when ready"),
   );
   live.append(activity, copy, progress, meta);
   stageContent.append(live);
-  stageContent.append(node("p", "production-wait-note", "You can keep this page open or return later. Your campaign continues safely in the background."));
+  if (!isFailed) stageContent.append(node("p", "production-wait-note", "You can keep this page open or return later. Your campaign continues safely in the background."));
   if (campaign.lastError) {
     const referenceOrder = Boolean(campaign.decision?.selected?.quote?.brief?.evidenceUrl);
     const message = campaign.lastError.code === "reference_video_fetch_failed"
@@ -1151,7 +1233,7 @@ function renderProduction(delegation) {
       : "Production stopped before completion. Retry the same order—your payment and selections are preserved.";
     stageContent.append(node("div", "notice", message));
   }
-  if (campaign.state === "fulfillment_failed") {
+  if (isFailed) {
     const retry = node("button", "button confirm", "Retry production · no new payment");
     retry.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/retry-fulfillment`, {}));
     const resolution = node("button", "button danger", "Request human resolution");
@@ -1200,17 +1282,45 @@ function renderPackage(delegation) {
     const recap = planRecap(campaign);
     if (recap) stageContent.append(recap);
   }
-  const video = campaignPackage.files.find((item) => item.mediaType?.startsWith("video/"));
-  if (video) {
+  const videos = campaignPackage.files.filter((item) => item.mediaType?.startsWith("video/"));
+  let selectedVideo = videos[0] ?? null;
+  if (videos.length > 0) {
     const player = node("video", "campaign-video");
     player.controls = true;
     player.preload = "metadata";
-    player.src = video.url;
+    player.src = videos[0].url;
+    if (videos.length > 1) {
+      const choices = node("div", "creative-variants");
+      choices.setAttribute("aria-label", "Delivered videos");
+      for (const [index, file] of videos.entries()) {
+        const choice = node("button", `creative-variant${index === 0 ? " selected" : ""}`,
+          `Hook ${file.specification?.hookIndex ?? index + 1}`);
+        choice.type = "button";
+        choice.setAttribute("aria-pressed", String(index === 0));
+        choice.addEventListener("click", () => {
+          selectedVideo = file;
+          player.pause();
+          player.src = file.url;
+          player.load();
+          download.href = file.url;
+          download.download = `hirebit-hook-${file.specification?.hookIndex ?? index + 1}.mp4`;
+          download.textContent = `Download Hook ${file.specification?.hookIndex ?? index + 1}`;
+          for (const button of choices.querySelectorAll("button")) {
+            const selected = button === choice;
+            button.classList.toggle("selected", selected);
+            button.setAttribute("aria-pressed", String(selected));
+          }
+        });
+        choices.append(choice);
+      }
+      stageContent.append(choices);
+    }
     stageContent.append(player);
 
-    const download = node("a", "button secondary download-video", "Download video");
-    download.href = video.url;
-    download.download = "hirebit-campaign.mp4";
+    const firstHook = videos[0].specification?.hookIndex ?? 1;
+    const download = node("a", "button secondary download-video", videos.length > 1 ? `Download Hook ${firstHook}` : "Download video");
+    download.href = videos[0].url;
+    download.download = videos.length > 1 ? `hirebit-hook-${firstHook}.mp4` : "hirebit-campaign.mp4";
     stageContent.append(download);
   }
   stageContent.append(dataGrid([
@@ -1219,24 +1329,24 @@ function renderPackage(delegation) {
     ["PAYMENT FEE", `${completedFeeSats} sats${simulated ? " simulated" : ""}`],
     ["TOTAL SPEND", `${completedTotalSats} sats`],
     ["REMAINING", `${campaignPackage.summary.spend.remainingBudgetSats} sats`],
-    ["PAYMENT", simulated ? "Simulated GoBTC · no Bitcoin" : "Bitcoin mainnet"],
+    ["PAYMENT", simulated ? "GoBTC preview · 0 BTC transferred" : "Bitcoin mainnet"],
   ]));
   if (delegation.resolution) {
-    stageContent.append(node("p", "notice", "Your issue is recorded for review. No refund has been sent."));
+    stageContent.append(node("p", "notice", "Your issue is recorded for review. Refund status: pending review; payout: not issued."));
   } else if (campaign.completedAt && Date.now() <= Date.parse(campaign.completedAt) + 72 * 60 * 60 * 1000) {
     const report = node("button", "button secondary", "Report a delivery issue");
-    report.addEventListener("click", () => openDeliveryIssueDialog(delegation));
+    report.addEventListener("click", () => openDeliveryIssueDialog(delegation, selectedVideo));
     showActions(report);
   }
 }
 
-function openDeliveryIssueDialog(delegation) {
-  const video = delegation.campaign?.package?.files?.find((file) => file.mediaType?.startsWith("video/"));
+function openDeliveryIssueDialog(delegation, video) {
   if (!video) return toast("The delivered video is unavailable for review", true);
   const dialog = node("dialog", "review-dialog");
   const form = node("form");
   form.method = "dialog";
-  form.append(node("h2", "", "Report a delivery issue"), node("p", "", "Tell us what the approved brief required and what appears in the delivered video. We’ll review the evidence; a quality refund, if approved, is limited to 20% of the service price. No free rework is included."));
+  const hook = video.specification?.hookIndex;
+  form.append(node("h2", "", `Report a delivery issue${Number.isSafeInteger(hook) ? ` · Hook ${hook}` : ""}`), node("p", "", "Tell us what the approved brief required and what appears in the selected video. We’ll review the evidence; a quality refund, if approved, is limited to 20% of the service price. No free rework is included."));
   const fields = [
     ["What should appear?", "expected", "textarea"],
     ["What actually appears?", "observed", "textarea"],
@@ -1284,6 +1394,35 @@ function openDeliveryIssueDialog(delegation) {
   dialog.showModal();
 }
 
+function openCancellationDialog(delegation) {
+  const dialog = node("dialog", "review-dialog");
+  const form = node("form");
+  form.method = "dialog";
+  form.append(
+    node("h2", "", "Stop this order?"),
+    node("p", "", "Hirebit will stop work where possible. If payment or production has started, any refund depends on the actual work and costs already incurred."),
+  );
+  const actions = node("div", "review-dialog-actions");
+  const back = node("button", "button secondary", "Keep order");
+  back.type = "button";
+  back.addEventListener("click", () => dialog.close());
+  const confirm = node("button", "button danger", "Request cancellation");
+  confirm.type = "submit";
+  actions.append(back, confirm);
+  form.append(actions);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    confirm.disabled = true;
+    const sent = await act(`/v1/delegations/${encodeURIComponent(delegation.id)}/cancel`, {});
+    if (sent) dialog.close();
+    else confirm.disabled = false;
+  });
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.append(form);
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
 function renderCancellation(delegation) {
   const campaign = delegation.campaign;
   const state = campaign?.state ?? delegation.state;
@@ -1296,14 +1435,14 @@ function renderCancellation(delegation) {
       ? "GoBTC confirmed the invoice ended without payment. No video production was started."
       : "This request stopped before an order or payment was placed."
     : state === "refund_review_required"
-      ? "Production was stopped before it started. The service price is marked for refund review; no Bitcoin has been returned yet. Any network fee already spent is not included."
+      ? "Production stopped before it started. Service-price refund: pending review. BTC payout: not issued. Any network fee already spent is excluded."
       : state === "cost_review_required"
-        ? "Production had already started. We’ll check documented costs before deciding what part of the service price can be returned. No refund has been sent."
+        ? "Production had already started. We’ll check documented costs before deciding the refundable service-price amount. BTC payout: not issued."
         : "A payment or order may still be in flight. We’ve asked the Seller to stop new production and are checking GoBTC before confirming the outcome.";
   stageContent.append(node("p", "hero-copy", copy));
   if (state === "refund_review_required") stageContent.append(dataGrid([
     ["SERVICE PRICE TO REVIEW", `${campaign.cancellation?.refund?.amountSats ?? campaign.sellerOrder?.amountSats ?? "—"} sats`],
-    ["BTC REFUND", "Not sent"],
+    ["BTC REFUND", "Pending review · payout not issued"],
   ]));
 }
 
@@ -1326,6 +1465,7 @@ function render(delegation) {
   else if (["cancelled", "cancellation_pending", "refund_review_required", "cost_review_required"].includes(delegation.state)) renderCancellation(delegation);
   else if (delegation.state === "clarification_required") renderQuestions(delegation);
   else if (delegation.state === "approval_required") renderMandate(delegation);
+  else if (delegation.state === "campaign_creation_failed") renderCampaignCreationFailed(delegation);
   else if (["advisory_ready", "awaiting_purchase_confirmation"].includes(delegation.state)) renderDecision(delegation);
   else if (delegation.state === "campaign_failed" || delegation.campaign?.state === "decision_failed") {
     renderCampaignFailed(delegation);
@@ -1359,11 +1499,7 @@ function render(delegation) {
   }
   if (delegation.campaign && !["completed", "cancelled", "cancellation_pending", "refund_review_required", "cost_review_required", "payment_origin_review_required"].includes(delegation.state)) {
     const cancel = node("button", "button secondary", "Request cancellation");
-    cancel.addEventListener("click", () => {
-      if (window.confirm("Ask Hirebit to stop this order? If payment or production has started, we’ll review the outcome and any costs before confirming a refund.")) {
-        void act(`/v1/delegations/${encodeURIComponent(delegation.id)}/cancel`, {});
-      }
-    });
+    cancel.addEventListener("click", () => openCancellationDialog(delegation));
     actionBar.append(cancel);
     actionBar.classList.remove("hidden");
   }
@@ -1387,6 +1523,7 @@ async function act(path, payload) {
 async function loadDelegation(id, quiet = false) {
   try {
     const delegation = await api(`/v1/delegations/${encodeURIComponent(id)}`);
+    focusWorkspace("execute");
     render(delegation);
   } catch (error) {
     if (!quiet) toast(error.message, true);
@@ -1415,7 +1552,7 @@ function schedulePoll(delegation) {
   const watchingCancelledOrder = delegation.state === "cancelled"
     && delegation.campaign?.sellerOrder && delegation.campaign?.cancellation?.requestedAt
     && Date.now() < Date.parse(delegation.campaign.cancellation.requestedAt) + 7 * 24 * 60 * 60 * 1000;
-  if (["completed", "refund_review_required", "cost_review_required", "payment_origin_review_required", "declined", "clarification_required", "approval_required", "awaiting_purchase_confirmation", "advisory_ready", "execution_paused", "interpretation_failed", "campaign_failed"].includes(delegation.state)
+  if (["completed", "refund_review_required", "cost_review_required", "payment_origin_review_required", "declined", "clarification_required", "approval_required", "awaiting_purchase_confirmation", "advisory_ready", "execution_paused", "interpretation_failed", "campaign_failed", "campaign_creation_failed"].includes(delegation.state)
     || (delegation.state === "cancelled" && !watchingCancelledOrder)) return;
   pollTimer = setTimeout(async () => {
     try {
@@ -1480,6 +1617,7 @@ $("#delegation-form").addEventListener("submit", async (event) => {
       headers: { "idempotency-key": `console-${crypto.randomUUID()}` },
       body: JSON.stringify({ request, context }),
     });
+    focusWorkspace("execute");
     render(delegation);
     await loadRecent();
     if (window.matchMedia("(max-width: 760px)").matches) {
@@ -1501,9 +1639,12 @@ $("#product-image-file").addEventListener("change", updateImageName);
 $("#platform").addEventListener("change", updateReferenceVideoHint);
 selectPreset("auto");
 updateImageName();
+resizeWorkspace();
 
 try { await loginFromFragment(); } catch (error) { toast(error.message, true); }
 await readiness();
 await loadRecent();
+const linked = new URLSearchParams(location.search).get("delegation");
 const saved = localStorage.getItem("activeDelegationId");
-if (saved) await loadDelegation(saved, true);
+if (linked && /^dlg_[a-f0-9-]{36}$/iu.test(linked)) await loadDelegation(linked);
+else if (saved) await loadDelegation(saved, true);

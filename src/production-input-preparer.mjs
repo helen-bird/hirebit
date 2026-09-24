@@ -300,9 +300,12 @@ const GOOGLE_STYLE_CONTROLS = Object.freeze({
 const GOOGLE_PACE_RATES = Object.freeze({ slow: 0.85, normal: 1, fast: 1.18 });
 const GOOGLE_ACCENT_ALIASES = Object.freeze({
   "us english": "en-US",
+  "united states english": "en-US",
+  "english (united states)": "en-US",
   "american english": "en-US",
   american: "en-US",
   "uk english": "en-GB",
+  "united kingdom english": "en-GB",
   "british english": "en-GB",
   british: "en-GB",
   "mexican spanish": "es-MX",

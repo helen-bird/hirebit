@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseEnv } from "node:util";
 
@@ -12,37 +12,98 @@ const tracked = execFileSync("git", ["ls-files", "--stage", "-z"], { encoding: "
     const [mode, oid, stage] = entry.slice(0, tab).split(" ");
     return { mode, oid, stage, file: entry.slice(tab + 1) };
   });
+const workingChanges = execFileSync("git", ["diff", "--name-only", "-z", "--"], { encoding: "utf8" })
+  .split("\0").filter(Boolean);
+const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], { encoding: "utf8" })
+  .split("\0").filter(Boolean);
 
-const forbiddenDirectories = /(^|\/)(\.buyer|\.seller|\.gobtcpay|\.hypit|\.demo|\.shared-model|\.validation|\.tools|\.local-ops|\.pnpm-store|\.deck-assets|\.deck-build|\.codex-finalizer|node_modules|output)(\/|$)/;
+const forbiddenDirectories = /(^|\/)(\.buyer|\.seller|\.gobtcpay|\.hypit|\.demo|\.shared-model|\.validation|\.tools|\.local-ops|\.pnpm-store|\.deck-assets|\.deck-build(?:-[^/]+)?|\.deck-inspect(?:-[^/]+)?|\.codex-finalizer|node_modules|output(?:-[^/]+)?)(\/|$)/;
 const forbiddenExtensions = /\.(pem|key|p12|pfx|jks|keystore)$/i;
 const forbiddenFiles = new Set(["model.integration.json", "productions/hypit.runtime.json", "application_default_credentials.json"]);
 const allowedEnvironmentExamples = new Set([".env.example", ".env.public-demo.example"]);
 const findings = [];
 const localSecrets = new Set();
+const unsafePaths = new Set();
+const trackedByPath = new Map(tracked.map((entry) => [entry.file, entry]));
+const patterns = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/g, "private key"],
+  [/\bAKIA[0-9A-Z]{16}\b/g, "AWS access key"],
+  [/\bAIza[0-9A-Za-z_-]{20,}\b/g, "Google API key"],
+  [/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "GitHub token"],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "GitHub fine-grained token"],
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "Slack token"],
+  [/\bsk-[A-Za-z0-9_-]{20,}\b/g, "provider API key"],
+  [/"type"\s*:\s*"service_account"/g, "service account credentials"],
+  [/"refresh_token"\s*:\s*"[A-Za-z0-9._\/-]{20,}"/g, "OAuth refresh token"],
+  [new RegExp("\\/" + "Users" + "\\/(?!<)[A-Za-z0-9._-]+\\/", "g"), "personal absolute path"],
+];
+
+function checkPath(file) {
+  const name = basename(file);
+  if (forbiddenDirectories.test(file) || forbiddenExtensions.test(file) || forbiddenFiles.has(file)
+    || forbiddenFiles.has(name) || /^cloudflare\/.*\.zip$/.test(file)) {
+    findings.push(`${file}: forbidden secret/runtime path`);
+    unsafePaths.add(file);
+    return false;
+  }
+  if (name.startsWith(".env") && !allowedEnvironmentExamples.has(file)) {
+    findings.push(`${file}: environment file is not an approved example`);
+    unsafePaths.add(file);
+    return false;
+  }
+  return true;
+}
+
+function checkContent(file, data, source = "staged") {
+  const suffix = source === "staged" ? "" : ` in ${source}`;
+  for (const secret of localSecrets) {
+    if (data.includes(Buffer.from(secret))) {
+      findings.push(`${file}: contains a locally configured credential${suffix}`);
+      break;
+    }
+  }
+  const content = data.toString("utf8");
+  for (const [pattern, label] of patterns) {
+    pattern.lastIndex = 0;
+    if (pattern.test(content)) findings.push(`${file}: possible ${label}${suffix}`);
+  }
+}
 
 // Compare against this operator's local credentials without logging any values.
 for (const file of [".env", ".env.public-demo"]) {
   const path = join(root, file);
   if (!existsSync(path)) continue;
-  for (const [name, value] of Object.entries(parseEnv(readFileSync(path, "utf8")))) {
-    if (/(?:TOKEN|SECRET|PASSWORD|API_KEY)$/.test(name) && value.length >= 8) localSecrets.add(value);
+  try {
+    for (const [name, value] of Object.entries(parseEnv(readFileSync(path, "utf8")))) {
+      if (/(?:TOKEN|SECRET|PASSWORD|API_KEY)$/.test(name) && value.length >= 8) localSecrets.add(value);
+    }
+  } catch {
+    findings.push(`Unable to inspect local ${file} credentials for comparison`);
   }
 }
 for (const file of [".buyer/api-token", ".buyer/public-demo-api-token", ".seller/api-token"]) {
   const path = join(root, file);
   if (existsSync(path)) {
-    const value = readFileSync(path, "utf8").trim();
-    if (value.length >= 8) localSecrets.add(value);
+    try {
+      const value = readFileSync(path, "utf8").trim();
+      if (value.length >= 8) localSecrets.add(value);
+    } catch {
+      findings.push(`Unable to inspect local ${file} credential for comparison`);
+    }
   }
 }
 const merchantFile = join(root, ".seller/merchant-secrets.json");
 if (existsSync(merchantFile)) {
-  const value = JSON.parse(readFileSync(merchantFile, "utf8")).merchantApiKey;
-  if (typeof value === "string" && value.length >= 8) localSecrets.add(value);
+  try {
+    const value = JSON.parse(readFileSync(merchantFile, "utf8")).merchantApiKey;
+    if (typeof value === "string" && value.length >= 8) localSecrets.add(value);
+  } catch {
+    // Keep malformed local configuration out of diagnostics and fail closed.
+    findings.push("Unable to inspect local merchant credential for comparison");
+  }
 }
 
 for (const { file, mode, oid, stage } of tracked) {
-  const name = basename(file);
   if (stage !== "0" || mode === "120000") {
     findings.push(`${file}: unresolved index entry or symbolic link requires review`);
     continue;
@@ -53,40 +114,44 @@ for (const { file, mode, oid, stage } of tracked) {
     }
     continue;
   }
-  if (forbiddenDirectories.test(file) || forbiddenExtensions.test(file) || forbiddenFiles.has(file)
-    || forbiddenFiles.has(name) || /^cloudflare\/.*\.zip$/.test(file)) {
-    findings.push(`${file}: forbidden secret/runtime path`);
-    continue;
-  }
-  if (name.startsWith(".env") && !allowedEnvironmentExamples.has(file)) {
-    findings.push(`${file}: environment file is not an approved example`);
-    continue;
-  }
+  if (!checkPath(file)) continue;
 
   // Read the Git object being committed, not the possibly different working file.
   // Include large files and binary metadata; never silently skip an asset.
-  const data = execFileSync("git", ["cat-file", "blob", oid], { maxBuffer: 100 * 1024 * 1024 });
-  for (const secret of localSecrets) {
-    if (data.includes(Buffer.from(secret))) {
-      findings.push(`${file}: contains a locally configured credential`);
-      break;
-    }
+  try {
+    checkContent(file, execFileSync("git", ["cat-file", "blob", oid], { maxBuffer: 100 * 1024 * 1024 }));
+  } catch {
+    findings.push(`${file}: staged object could not be inspected`);
   }
-  const text = data.toString("utf8");
-  const patterns = [
-    [/-----BEGIN [A-Z ]*PRIVATE KEY-----/g, "private key"],
-    [/\bAKIA[0-9A-Z]{16}\b/g, "AWS access key"],
-    [/\bAIza[0-9A-Za-z_-]{20,}\b/g, "Google API key"],
-    [/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "GitHub token"],
-    [/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "GitHub fine-grained token"],
-    [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "Slack token"],
-    [/\bsk-[A-Za-z0-9_-]{20,}\b/g, "provider API key"],
-    [/"type"\s*:\s*"service_account"/g, "service account credentials"],
-    [/"refresh_token"\s*:\s*"[A-Za-z0-9._\/-]{20,}"/g, "OAuth refresh token"],
-    [new RegExp("\\/" + "Users" + "\\/(?!<)[A-Za-z0-9._-]+\\/", "g"), "personal absolute path"],
-  ];
-  for (const [pattern, label] of patterns) {
-    if (pattern.test(text)) findings.push(`${file}: possible ${label}`);
+}
+
+// Also inspect content that could be added in the next commit without editing it.
+// Git's exclusion rules leave ignored local credentials and runtime output outside this pass.
+for (const file of new Set([...workingChanges, ...untracked])) {
+  const entry = trackedByPath.get(file);
+  if (entry?.mode === "160000" || unsafePaths.has(file)) continue;
+  if (!entry && !checkPath(file)) continue;
+  const path = join(root, file);
+  let stat;
+  try {
+    stat = lstatSync(path, { throwIfNoEntry: false });
+  } catch {
+    findings.push(`${file}: working tree entry could not be inspected`);
+    continue;
+  }
+  if (!stat) continue; // A deletion has no working bytes to inspect.
+  if (!stat.isFile()) {
+    findings.push(`${file}: working tree entry is not a regular file`);
+    continue;
+  }
+  if (stat.size > 100 * 1024 * 1024) {
+    findings.push(`${file}: working tree file exceeds repository inspection limit`);
+    continue;
+  }
+  try {
+    checkContent(file, readFileSync(path), "working tree");
+  } catch {
+    findings.push(`${file}: working tree file could not be inspected`);
   }
 }
 
@@ -95,4 +160,4 @@ if (findings.length) {
   process.exit(1);
 }
 
-console.log(`Repository safety check passed for ${tracked.length} staged entries, including local credential comparisons.`);
+console.log(`Repository safety check passed for ${tracked.length} index entries and ${new Set([...workingChanges, ...untracked]).size} working-tree candidates, including local credential comparisons.`);

@@ -11,12 +11,19 @@ import test from "node:test";
 import ffmpegStatic from "ffmpeg-static";
 
 import {
+  compactDisplayHook,
   compileCommissionProject,
   decodeHypitTextJson,
 } from "../src/hypit-commission-compiler.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
+
+test("reference headline stays readable in a vertical title frame", () => {
+  assert.equal(compactDisplayHook("Precise, Easy Makeup Cleanup", "Precision Beauty Swabs"), "Easy Makeup Cleanup");
+  assert.equal(compactDisplayHook("Clean Up Your Makeup, Precisely", "Precision Beauty Swabs"), "Clean Up Your Makeup");
+  assert.equal(compactDisplayHook("Makeup Users: Precise, Easy Cleanup", "Precision Beauty Swabs"), "Precise, Easy Cleanup");
+});
 
 async function fixture({ addOns = {}, inputSourceManifest = false } = {}) {
   const jobDir = await mkdtemp(join(tmpdir(), "hypit-commission-compiler-"));
@@ -190,6 +197,7 @@ test("commission compiler uses reference-guided Veo motion while retaining the b
   };
   input.quote.brief = {
     productName: "Cotton swabs",
+    objective: "conversion_focused_tiktok_launch_campaign",
     description: "Show the supplied product using the reference video's reusable visual grammar",
     hooks: ["A closer look"],
     items: ["Double-tipped swabs", "Clear storage tub", "Compact detail tool"],
@@ -312,6 +320,7 @@ test("commission compiler uses reference-guided Veo motion while retaining the b
   };
 
   const productionInputs = await inputsWithNarration(input, 10);
+  productionInputs.variants[0].headline = "Cotton swabs: A very long headline that cannot fit in the vertical title frame";
   const manifest = await compileCommissionProject({
     rootDir, ...input, generatedVideo, referenceAdaptation, productionInputs,
   });
@@ -322,6 +331,10 @@ test("commission compiler uses reference-guided Veo motion while retaining the b
   const author = await readFile(join(projectDir, "author.svml"), "utf8");
   assert.equal((author.match(/reference-shot-[1-6]/gu) ?? []).length, 0);
   assert.match(author, /generated-motion/u);
+  assert.match(author, />Cotton swabs<\/typo:Area>/u);
+  assert.doesNotMatch(author, /A very long headline/u);
+  assert.doesNotMatch(author, /conversion_focused_tiktok_launch_campaign/u);
+  assert.doesNotMatch(author, /reference-copy-5/u);
   assert.doesNotMatch(author, /product-endcard/u);
   assert.match(author, /end="12\.6s"/u);
   assert.doesNotMatch(author, /presenter-shot/u);

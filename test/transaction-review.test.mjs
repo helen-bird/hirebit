@@ -1,7 +1,35 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { transactionReview } from "../src/transaction-review.mjs";
+
+test("review command keeps local and public demo state profiles separate", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "hirebit-review-profiles-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const buyerDir = join(directory, "buyer");
+  const sellerDir = join(directory, "seller");
+  await Promise.all([mkdir(buyerDir), mkdir(sellerDir)]);
+  for (const [prefix, id] of [["demo", "cmp_local"], ["public-demo", "cmp_public"]]) {
+    await writeFile(join(buyerDir, `${prefix}-state.json`), JSON.stringify({
+      campaigns: { [id]: { id, state: "payment_uncertain", updatedAt: "2026-09-24T11:00:00.000Z" } },
+    }));
+    await writeFile(join(buyerDir, `${prefix}-intake-state.json`), JSON.stringify({ delegations: {} }));
+    await writeFile(join(sellerDir, `${prefix}-state.json`), JSON.stringify({ orders: {}, audit: [] }));
+  }
+  const script = resolve(import.meta.dirname, "../scripts/transaction-review.mjs");
+  for (const [mode, expectedId] of [["demo", "cmp_local"], ["public-demo", "cmp_public"]]) {
+    const output = execFileSync(process.execPath, [script, mode], {
+      encoding: "utf8", env: { ...process.env, BUYER_DATA_DIR: buyerDir, SELLER_DATA_DIR: sellerDir },
+    });
+    const report = JSON.parse(output);
+    assert.equal(report.mode, mode);
+    assert.deepEqual(report.issues.map((item) => item.id), [expectedId]);
+  }
+});
 
 test("review queue surfaces obligations without exposing payment identifiers or secrets", () => {
   const now = Date.parse("2026-09-24T12:00:00.000Z");

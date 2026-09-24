@@ -42,6 +42,7 @@ export function streamRegularFile(response, file) {
   // Node 24 attempt a second close during FileHandle garbage collection and terminate.
   const stream = file.handle.createReadStream({ start: 0, autoClose: true });
   stream.once("error", (error) => response.destroy(error));
+  response.once("close", () => stream.destroy());
   stream.pipe(response);
 }
 

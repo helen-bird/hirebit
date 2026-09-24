@@ -37,6 +37,9 @@ export class GoBtcPayClient {
   }
 
   async createPayment({ amountSats, description, externalId }) {
+    if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
+      throw new AppError("invalid_payment_amount", "Payment amount must be a positive integer number of satoshis", 400);
+    }
     if (!this.merchantApiKey) {
       throw new AppError("merchant_not_configured", "GOBTCPAY_MERCHANT_API_KEY is not configured", 503);
     }

@@ -4,6 +4,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { access, chmod, copyFile, link, lstat, mkdir, readFile, readdir, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 
@@ -21,6 +22,17 @@ import { resolveRegularFile } from "./safe-file.mjs";
 import { assertProductionMaySpend, markProductionCancellation } from "./production-cancellation.mjs";
 import { socialVideoPlatform } from "./security.mjs";
 import { callSellerProviderTwice } from "./seller-provider-attempt.mjs";
+
+const require = createRequire(import.meta.url);
+
+function defaultMediaBinDir(rootDir) {
+  if (process.platform === "darwin" && process.arch === "arm64") {
+    try {
+      return dirname(require.resolve("@ffprobe-installer/darwin-arm64/package.json"));
+    } catch { /* The platform-specific optional package is not installed. */ }
+  }
+  return join(rootDir, ".tools/media-bin");
+}
 
 function safeName(value) {
   return value.replace(/[^a-zA-Z0-9._-]/gu, "-");
@@ -200,6 +212,7 @@ export async function downloadSocialReferenceVideo(value, {
   maxBytes = MAX_SOCIAL_REFERENCE_VIDEO_BYTES,
   timeoutMs = 300_000,
   commandRunner = command,
+  mediaBinDir = null,
 } = {}) {
   const platform = socialVideoPlatform(value);
   if (platform === null) {
@@ -256,7 +269,7 @@ export async function downloadSocialReferenceVideo(value, {
     HYPIT_STATE_HOME: stateHome,
     HYPIT_FETCH_MAX_BYTES: String(maxBytes),
     PATH: [
-      join(projectRoot, ".tools/media-bin"),
+      mediaBinDir ?? defaultMediaBinDir(projectRoot),
       join(projectRoot, ".tools/uv"),
       dirname(process.execPath),
       dirname(ffmpegStatic),
@@ -438,6 +451,7 @@ export class HypitAdapter {
     referenceVideoStateHome = resolve(dataDir, "hypit-fetch-state"),
     referenceVisionProvider = null,
     referenceAnalysisRunner = command,
+    mediaBinDir = null,
     trustedUploadOrigin = null,
     trustedUploadDirectory = null,
     spendAllowed = null,
@@ -457,6 +471,7 @@ export class HypitAdapter {
     this.referenceVideoStateHome = resolve(referenceVideoStateHome);
     this.referenceVisionProvider = referenceVisionProvider;
     this.referenceAnalysisRunner = referenceAnalysisRunner;
+    this.mediaBinDir = mediaBinDir === null ? defaultMediaBinDir(rootDir) : resolve(mediaBinDir);
     if ((trustedUploadOrigin === null) !== (trustedUploadDirectory === null)) {
       throw new AppError("trusted_upload_configuration_invalid", "Trusted upload origin and directory must be configured together", 503);
     }
@@ -676,6 +691,27 @@ export class HypitAdapter {
 
   async recoverUnsubmitted({ order, quote }) {
     return await this.start({ order, quote });
+  }
+
+  async canRetryBeforeBuild({ order, quote }) {
+    const jobDir = resolve(this.dataDir, "jobs", safeName(order.id));
+    try {
+      if (!(await lstat(jobDir)).isDirectory()) return false;
+      const commission = JSON.parse(await readFile(join(jobDir, "commission.json"), "utf8"));
+      if (commission?.order?.id !== order.id || commission?.quote?.id !== quote.id
+        || commission?.order?.amountSats !== order.amountSats) return false;
+      for (const name of ["build.attempt.json", "build.receipt.json"]) {
+        try {
+          await lstat(join(jobDir, name));
+          return false;
+        } catch (error) {
+          if (error?.code !== "ENOENT") return false;
+        }
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async resume({ buildId, order, quote }) {
@@ -911,6 +947,7 @@ export class HypitAdapter {
                 stateHome: this.referenceVideoStateHome,
                 protectedPaths: this.protectedPaths,
                 maxBytes,
+                mediaBinDir: this.mediaBinDir,
               })
               : await downloadExternalResource(value, {
                 directory: inputDir,
@@ -1089,7 +1126,7 @@ export class HypitAdapter {
       TMPDIR: directory,
       HYPIT_STATE_HOME: this.referenceVideoStateHome,
       PATH: [
-        join(this.rootDir, ".tools/media-bin"),
+        this.mediaBinDir,
         join(this.rootDir, ".tools/uv"),
         dirname(process.execPath),
         dirname(ffmpegStatic),
@@ -1108,6 +1145,7 @@ export class HypitAdapter {
         dirname(this.hypitBin),
         dirname(process.execPath),
         join(this.rootDir, ".tools"),
+        this.mediaBinDir,
       ],
       writeRoot: resolve(homedir()),
       allowedWritePaths: [directory, this.referenceVideoStateHome],

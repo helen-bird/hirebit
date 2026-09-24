@@ -12,7 +12,7 @@
   <header class="topbar">
     <a class="brand" href="/console/" aria-label="Hirebit home">
       <span class="brand-mark">₿</span>
-      <span><strong>HIREBIT</strong><small>AUTONOMOUS CAMPAIGNS</small></span>
+      <span><strong>HIREBIT</strong></span>
     </a>
     <div class="topbar-right">
       <button id="logout" class="session-button" type="button">LOG OUT</button>
@@ -25,7 +25,7 @@
     </section>
 
     <section id="create-view" class="view-panel active" data-view-panel="create">
-      <div id="demo-workspace" class="run-grid">
+      <div id="demo-workspace" class="run-grid" data-focus="brief">
         <article class="panel launcher-panel">
           <div class="panel-heading compact-heading"><span class="index">01</span><div><p class="kicker">PURCHASE MODE</p><h2>Choose authority</h2></div></div>
           <div class="scenario-list" aria-label="Purchase authority">
@@ -53,6 +53,8 @@
             <button id="launch-buyer" class="button primary" type="submit"><span>Start</span><span aria-hidden="true">→</span></button>
           </form>
         </article>
+
+        <div id="workspace-resizer" class="workspace-resizer" role="separator" aria-orientation="vertical" aria-label="Resize brief and execution panels" aria-valuemin="20" aria-valuemax="80" aria-valuenow="76" tabindex="0"><span aria-hidden="true"></span></div>
 
         <article class="panel signature-panel">
           <div class="signature-topline"><span>02 · EXECUTE</span><span id="active-id">READY</span></div>

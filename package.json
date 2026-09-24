@@ -31,7 +31,7 @@
     "worker:verify": "node --env-file=.env scripts/verify-worker-isolation.mjs",
     "repo:check": "node scripts/check-repository.mjs",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check src/index.mjs && node --check src/server.mjs && node --check src/security.mjs && node --check src/safe-file.mjs && node --check src/json-store.mjs && node --check src/external-resource.mjs && node --check src/media-validator.mjs && node --check src/production-contract.mjs && node --check src/production-cancellation.mjs && node --check src/production-input-preparer.mjs && node --check src/reference-vision-planner.mjs && node --check src/seller-service.mjs && node --check src/gobtcpay.mjs && node --check src/demo-payment.mjs && node --check src/hypit-adapter.mjs && node --check src/hypit-commission-compiler.mjs && node --check src/docker-hypit-runner.mjs && node --check src/buyer-index.mjs && node --check src/buyer/server.mjs && node --check src/buyer/buyer-service.mjs && node --check src/buyer/campaign-completion.mjs && node --check src/buyer/creative-advisor.mjs && node --check src/buyer/intake-service.mjs && node --check src/buyer/mandate-extractor.mjs && node --check src/buyer/instant-wallet.mjs && node --check scripts/merchant-onboard.mjs && node --check scripts/public-demo-link.mjs && node --check scripts/hypit-smoke.mjs && node --check scripts/production-acceptance.mjs && node --check scripts/reference-clone-acceptance.mjs && node --check scripts/veo-product-validation.mjs && node --check scripts/verify-worker-isolation.mjs && node --check cloudflare/pages/_worker.js && node --check web/app.js"
+    "check": "node scripts/check-syntax.mjs"
   },
   "dependencies": {
     "@noble/curves": "2.4.0",
@@ -45,5 +45,8 @@
   },
   "engines": {
     "node": ">=22.15.0"
+  },
+  "optionalDependencies": {
+    "@ffprobe-installer/darwin-arm64": "^5.0.1"
   }
 }

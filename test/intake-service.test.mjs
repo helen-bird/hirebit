@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -194,6 +195,47 @@ test("delivered campaign dispute requires evidence and closes after 72 hours", a
   await assert.rejects(service.requestResolution(delegation.id, {
     reason: "Another issue", evidence: reviewed.resolution.evidence,
   }), (error) => error.code === "dispute_window_closed");
+});
+
+test("a delivery issue binds to the revised creative and revised manifest", async () => {
+  const now = 1_800_000_000_000;
+  const { service, store } = await fixture([extraction()], { clock: () => now });
+  const delegation = await service.createDelegation({
+    input: { request: "Create a launch campaign for Acme under 2500 sats." },
+    idempotencyKey: "revised-delivery-dispute",
+  });
+  const generatedAt = new Date(now).toISOString();
+  const creative = {
+    path: "revisions/r2/creatives/final.mp4", sha256: "b".repeat(64), bytes: 2000,
+    mediaType: "video/mp4", validation: { durationSeconds: 12 },
+  };
+  const manifestData = `${JSON.stringify({
+    version: 1, campaignId: "campaign-revised", generatedAt, files: [creative],
+  }, null, 2)}\n`;
+  const manifest = {
+    path: "revisions/r2/manifest.json", sha256: createHash("sha256").update(manifestData).digest("hex"),
+    bytes: Buffer.byteLength(manifestData),
+  };
+  await store.transaction((state) => {
+    const current = state.delegations[delegation.id];
+    current.state = "completed";
+    current.campaignId = "campaign-revised";
+    current.campaign = {
+      id: "campaign-revised", state: "completed", completedAt: generatedAt,
+      sellerOrder: { amountSats: 1160 },
+      package: { state: "completed", revision: "r2", generatedAt, files: [manifest, creative] },
+    };
+  });
+  const result = await service.requestResolution(delegation.id, {
+    reason: "The delivered revision has a caption issue",
+    evidence: {
+      artifactPath: creative.path, timecodeSeconds: 2,
+      expected: "Product name is readable", observed: "Product name appears blurred",
+    },
+  });
+  assert.equal(result.resolution.deliverySnapshot.manifestMatches, true);
+  assert.equal(result.resolution.evidence.artifactSha256, creative.sha256);
+  assert.equal(result.resolution.evidence.packageManifestSha256, manifest.sha256);
 });
 
 function deferred() {
@@ -573,6 +615,122 @@ test("chosen autonomous path never asks for a second automatic-payment confirmat
   }), []);
 });
 
+test("confirm-purchase intake asks for each missing purchase-critical detail, including delivery timing", () => {
+  const cases = [
+    { name: "objective", overrides: { objective: null, objectiveConfidence: 0.1 }, expected: ["objective"] },
+    {
+      name: "product",
+      overrides: { subject: null, brief: { ...extraction().brief, productName: null, description: null } },
+      expected: ["subject"],
+    },
+    { name: "budget", overrides: { budgetSats: null, budgetType: null }, expected: ["budget_hard_limit"] },
+    { name: "soft budget", overrides: { budgetType: "preferred" }, expected: ["budget_hard_limit"] },
+    { name: "deadline", overrides: { deadlineMinutes: null, deadlineType: null }, expected: ["deadline"] },
+    { name: "explicit no deadline", overrides: { deadlineMinutes: null, deadlineType: "none" }, expected: [] },
+  ];
+  for (const { name, overrides, expected } of cases) {
+    const value = extraction({ authorizationMode: "confirm_before_purchase", ...overrides });
+    assert.deepEqual(questionsFor(value, {
+      request: `Create a product campaign (${name}); ask me before purchase.`,
+      maxCampaignSats: 3000,
+    }).map((item) => item.id), expected, name);
+  }
+});
+
+test("an omitted deadline blocks approval until the customer explicitly declines a time requirement", async () => {
+  const missing = extraction({ deadlineMinutes: null, deadlineType: null });
+  const answered = extraction({ deadlineMinutes: null, deadlineType: "none" });
+  const { service, buyer, extractor } = await fixture([missing, answered]);
+  let delegation = await service.createDelegation({
+    input: {
+      request: "Create a conversion video for Acme within a hard cap of 2500 sats.",
+      context: { purchaseMode: "confirm_before_purchase" },
+    },
+    idempotencyKey: "deadline-explicit-none",
+  });
+  assert.equal(delegation.state, "clarification_required");
+  assert.deepEqual(delegation.questions.map((item) => item.id), ["deadline"]);
+  await assert.rejects(service.confirmMandate(delegation.id, {
+    approved: true, mandateVersion: delegation.mandate.version, scopeHash: delegation.mandate.scopeHash,
+  }), (error) => error.code === "approval_not_expected");
+  delegation = await service.answerQuestions(delegation.id, { answers: { deadline: "I have no delivery-time requirement." } });
+  assert.equal(extractor.calls[1].answers[0].answer, "I have no delivery-time requirement.");
+  assert.equal(delegation.state, "approval_required");
+  assert.equal(delegation.mandate.deadlineType, "none");
+  delegation = await service.confirmMandate(delegation.id, {
+    approved: true, mandateVersion: delegation.mandate.version, scopeHash: delegation.mandate.scopeHash,
+  });
+  assert.equal(delegation.state, "awaiting_purchase_confirmation");
+  assert.equal(buyer.created.length, 1);
+  assert.equal(buyer.created[0].input.deadlineType, undefined);
+  assert.equal(buyer.created[0].input.deadlineMinutes, undefined);
+});
+
+test("purchase paths resolve varied incomplete briefs before creating a campaign", async () => {
+  const gaps = [
+    { name: "objective", override: { objective: null, objectiveConfidence: 0.1 }, question: "objective" },
+    { name: "product", override: { subject: null, brief: { ...extraction().brief, productName: null, description: null } }, question: "subject" },
+    { name: "budget", override: { budgetSats: null, budgetType: null }, question: "budget_hard_limit" },
+    { name: "deadline", override: { deadlineMinutes: null, deadlineType: null }, question: "deadline" },
+  ];
+  for (const mode of ["confirm_before_purchase", "auto_within_budget"]) {
+    for (const gap of gaps) {
+      const initial = extraction({ ...gap.override, authorizationMode: mode });
+      const resolved = extraction({ authorizationMode: mode });
+      const { service, buyer } = await fixture([initial, resolved]);
+      let delegation = await service.createDelegation({
+        input: {
+          request: `Create a conversion product video with a hard cap of 2500 sats and delivery within two hours (${gap.name}).`,
+          context: { purchaseMode: mode },
+        },
+        idempotencyKey: `gap-${mode}-${gap.name}`,
+      });
+      assert.equal(delegation.state, "clarification_required", `${mode}/${gap.name}`);
+      assert.deepEqual(delegation.questions.map((item) => item.id), [gap.question], `${mode}/${gap.name}`);
+      assert.equal(buyer.created.length, 0, `${mode}/${gap.name}`);
+      delegation = await service.answerQuestions(delegation.id, { answers: { [gap.question]: "The missing detail is confirmed." } });
+      assert.equal(delegation.state, "approval_required", `${mode}/${gap.name}`);
+      delegation = await service.confirmMandate(delegation.id, {
+        approved: true, mandateVersion: delegation.mandate.version, scopeHash: delegation.mandate.scopeHash,
+      });
+      assert.equal(buyer.created.length, 1, `${mode}/${gap.name}`);
+      assert.equal(buyer.created[0].input.autoExecute, mode === "auto_within_budget", `${mode}/${gap.name}`);
+      assert.equal(delegation.state, mode === "auto_within_budget" ? "execution_paused" : "awaiting_purchase_confirmation", `${mode}/${gap.name}`);
+    }
+  }
+});
+
+test("simultaneously missing product, budget and deadline remain blocking in autonomous mode", async () => {
+  const initial = extraction({
+    subject: null,
+    brief: { ...extraction().brief, productName: null, description: null },
+    budgetSats: null,
+    budgetType: null,
+    deadlineMinutes: null,
+    deadlineType: null,
+    authorizationMode: "auto_within_budget",
+  });
+  const { service, buyer } = await fixture([initial, extraction({ authorizationMode: "auto_within_budget" })]);
+  let delegation = await service.createDelegation({
+    input: {
+      request: "Make a launch video. I want the Buyer to choose a plan.",
+      context: { purchaseMode: "auto_within_budget" },
+    },
+    idempotencyKey: "combined-missing-constraints",
+  });
+  assert.deepEqual(delegation.questions.map((item) => item.id), ["subject", "budget_hard_limit", "deadline"]);
+  assert.equal(buyer.created.length, 0);
+  delegation = await service.answerQuestions(delegation.id, {
+    answers: {
+      subject: "Precision Beauty Swabs",
+      budget_hard_limit: "Maximum 2500 sats",
+      deadline: "Within two hours",
+    },
+  });
+  assert.equal(delegation.state, "approval_required");
+  assert.equal(buyer.created.length, 0);
+});
+
 test("explicit UI purchase mode is authoritative and separate from brief clarification", async () => {
   const { service } = await fixture([extraction({
     authorizationMode: "unspecified",
@@ -595,7 +753,13 @@ test("explicit UI purchase mode is authoritative and separate from brief clarifi
 
 test("uploaded image capability is scope-bound and materialized only for production", async () => {
   const referenceUploadId = `${"a".repeat(48)}.png`;
-  const automatic = extraction({ authorizationMode: "auto_within_budget", autoAuthorizationExplicit: true });
+  const automatic = extraction({
+    authorizationMode: "auto_within_budget",
+    autoAuthorizationExplicit: true,
+    // A model can mistake a social-video URL for an image reference. The
+    // customer's explicit image upload must still win at purchase time.
+    brief: { ...extraction().brief, referenceUrl: "https://www.tiktok.com/@creator/video/7461234567890123456" },
+  });
   const { service, buyer, extractor } = await fixture([automatic], {
     referenceUploadBaseUrl: "https://buyer.example",
   });
@@ -615,6 +779,52 @@ test("uploaded image capability is scope-bound and materialized only for product
     scopeHash: delegation.mandate.scopeHash,
   });
   assert.equal(buyer.created[0].input.brief.referenceUrl, `https://buyer.example/v1/uploads/${referenceUploadId}`);
+});
+
+test("campaign preflight failure is recoverable after the missing image service is configured", async () => {
+  const referenceUploadId = `${"f".repeat(48)}.jpg`;
+  const automatic = extraction({ authorizationMode: "auto_within_budget", autoAuthorizationExplicit: true });
+  const { service, buyer } = await fixture([automatic]);
+  let delegation = await service.createDelegation({
+    input: {
+      request: "Create an Acme conversion video with a hard cap of 2500 sats.",
+      context: { purchaseMode: "auto_within_budget", referenceUploadId },
+    },
+    idempotencyKey: "campaign-preflight-image-service",
+  });
+  delegation = await service.confirmMandate(delegation.id, {
+    approved: true, mandateVersion: delegation.mandate.version, scopeHash: delegation.mandate.scopeHash,
+  });
+  assert.equal(delegation.state, "campaign_creation_failed");
+  assert.equal(delegation.lastError.code, "reference_upload_unavailable");
+  assert.equal(buyer.created.length, 0);
+
+  service.referenceUploadBaseUrl = "https://buyer.example";
+  delegation = await service.confirmMandate(delegation.id, { approved: true });
+  assert.equal(delegation.state, "execution_paused");
+  assert.equal(buyer.created.length, 1);
+  assert.equal(buyer.created[0].input.brief.referenceUrl,
+    `https://buyer.example/v1/uploads/${referenceUploadId}`);
+});
+
+test("expired preflight deadline gives an actionable campaign failure without creating an order", async () => {
+  let now = 1_800_000_000_000;
+  const automatic = extraction({
+    authorizationMode: "auto_within_budget", autoAuthorizationExplicit: true,
+    deadlineMinutes: 1, deadlineType: "hard",
+  });
+  const { service, buyer } = await fixture([automatic], { clock: () => now });
+  let delegation = await service.createDelegation({
+    input: { request: "Create an Acme video within one minute and under 2500 sats." },
+    idempotencyKey: "campaign-preflight-deadline",
+  });
+  now += 61_000;
+  delegation = await service.confirmMandate(delegation.id, {
+    approved: true, mandateVersion: delegation.mandate.version, scopeHash: delegation.mandate.scopeHash,
+  });
+  assert.equal(delegation.state, "campaign_creation_failed");
+  assert.equal(delegation.lastError.code, "delegation_deadline_expired");
+  assert.equal(buyer.created.length, 0);
 });
 
 test("reference video URL is normalized, scope-bound, and supplied as production evidence", async () => {
@@ -648,6 +858,34 @@ test("reference video URL is normalized, scope-bound, and supplied as production
     scopeHash: delegation.mandate.scopeHash,
   });
   assert.equal(buyer.created[0].input.brief.evidenceUrl, "https://www.instagram.com/reel/DFa1b2C3d4E/");
+});
+
+test("each supported channel carries its matching reference into the approved campaign", async () => {
+  const channels = [
+    ["TikTok", "https://www.tiktok.com/@creator/video/7461234567890123456"],
+    ["Instagram Reels", "https://www.instagram.com/reel/DFa1b2C3d4E/"],
+    ["YouTube Shorts", "https://www.youtube.com/shorts/dQw4w9WgXcQ"],
+  ];
+  for (const [platform, referenceVideoUrl] of channels) {
+    const { service, buyer } = await fixture([extraction({
+      authorizationMode: "confirm_before_purchase",
+      brief: { ...extraction().brief, evidenceUrl: null },
+    })], { allowExternalUrls: false });
+    let delegation = await service.createDelegation({
+      input: {
+        request: `Create an Acme launch video for ${platform} under a hard cap of 2500 sats.`,
+        context: { platform, purchaseMode: "confirm_before_purchase", referenceVideoUrl },
+      },
+      idempotencyKey: `delegation-channel-${platform}`,
+    });
+    assert.equal(delegation.mandate.brief.evidenceUrl, referenceVideoUrl, platform);
+    delegation = await service.confirmMandate(delegation.id, {
+      approved: true, mandateVersion: delegation.mandate.version, scopeHash: delegation.mandate.scopeHash,
+    });
+    assert.equal(delegation.state, "awaiting_purchase_confirmation", platform);
+    assert.equal(buyer.created[0].input.brief.evidenceUrl, referenceVideoUrl, platform);
+    assert.equal(buyer.created[0].input.autoExecute, false, platform);
+  }
 });
 
 test("budget above Buyer policy requires explicit reduction before approval", async () => {

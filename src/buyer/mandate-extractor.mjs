@@ -80,7 +80,9 @@ export function validateExtractedMandate(value) {
     && (!Number.isSafeInteger(value.deadlineMinutes) || value.deadlineMinutes <= 0)) {
     throw new AppError("invalid_mandate_extraction", "deadlineMinutes must be a positive integer or null", 502);
   }
-  if (!["hard", "preferred", null].includes(value.deadlineType)) {
+  if (!["hard", "preferred", "none", null].includes(value.deadlineType)
+    || (value.deadlineMinutes === null && !["none", null].includes(value.deadlineType))
+    || (value.deadlineMinutes !== null && !["hard", "preferred"].includes(value.deadlineType))) {
     throw new AppError("invalid_mandate_extraction", "deadlineType is invalid", 502);
   }
   const priorities = value.decisionPriorities;
@@ -185,7 +187,7 @@ The structured_context purchaseMode is an explicit UI choice and is authoritativ
 
 budgetType is hard_limit only for explicit maximum language such as "up to", "at most", "do not exceed", "最高", "不超过", or an equivalent clear cap. Approximate or desired amounts are target. If no amount is stated, use null.
 
-Normalize the free-form objective and also map it to the closest objectiveFamily. deadlineType is hard only for explicit must/by/no-later-than language; wishes such as "ideally" or "as soon as possible" are preferred. Infer decisionPriorities from explicit emphasis such as cheapest, fastest, or highest quality; otherwise use balanced values led by objective fit. Normalize durations to deadlineMinutes and BTC budgets to integer satoshis only when conversion is explicit and unambiguous. Keep objective concise, using snake_case when practical. subject describes what the video promotes or explains.
+Normalize the free-form objective and also map it to the closest objectiveFamily. deadlineType is hard only for explicit must/by/no-later-than language; wishes such as "ideally" or "as soon as possible" are preferred. If the customer explicitly says there is no delivery-time requirement, use deadlineType="none" and deadlineMinutes=null. If delivery timing is unmentioned, use null for both so the application can ask; never infer "none" from silence. Infer decisionPriorities from explicit emphasis such as cheapest, fastest, or highest quality; otherwise use balanced values led by objective fit. Normalize durations to deadlineMinutes and BTC budgets to integer satoshis only when conversion is explicit and unambiguous. Keep objective concise, using snake_case when practical. subject describes what the video promotes or explains.
 
 The available visual choices are deliberately narrow. Set brief.visualMode to product_only only when the customer explicitly wants no presenter or people and only the product/reference visual. Set package_default when the customer accepts the package's fixed visual layout. Use null when the preference is unstated. Never imply that a custom person, avatar, actor, presenter likeness, or generated character is available.
 

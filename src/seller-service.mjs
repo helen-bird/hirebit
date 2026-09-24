@@ -387,7 +387,7 @@ export class SellerService {
   }
 
   async retryProduction(orderId) {
-    await this.store.transaction((state) => {
+    await this.store.transaction(async (state) => {
       const order = state.orders[orderId];
       if (order === undefined) throw new AppError("order_not_found", "Order not found", 404);
       if (order.cancellation?.state) throw new AppError("cancellation_pending", "Production cannot restart during cancellation review", 409);
@@ -398,13 +398,22 @@ export class SellerService {
       if (order.production.state !== "failed") {
         throw new AppError("production_not_failed", "Only failed production can be retried", 409);
       }
-      if (!order.production.buildId && [
+      const ambiguousPreBuildError = ["hypit_command_failed", "hypit_timeout", "hypit_spawn_failed"]
+        .includes(order.production.error?.code);
+      const provenPreBuild = ambiguousPreBuildError
+        && typeof this.producer.canRetryBeforeBuild === "function"
+        && await this.producer.canRetryBeforeBuild({
+          order: publicOrder(order),
+          quote: structuredClone(state.quotes[order.quoteId]),
+        });
+      if (!order.production.buildId && !provenPreBuild && [
         "production_recovery_missing_build",
         "production_submission_invalid",
         "hypit_build_submission_failed",
         "hypit_build_submission_uncertain",
         "hypit_timeout",
         "hypit_command_failed",
+        "hypit_spawn_failed",
       ].includes(order.production.error?.code)) {
         throw new AppError(
           "production_reconciliation_required",
@@ -498,6 +507,12 @@ export class SellerService {
         }
         return await this.store.transaction((draft) => {
           const current = draft.orders[orderId];
+          const otherOrder = Object.values(draft.orders).find((candidate) => (
+            candidate.id !== orderId && candidate.payment?.id === created.paymentId
+          ));
+          if (otherOrder !== undefined) {
+            throw new AppError("payment_creation_mismatch", "Payment ID is already bound to another Seller order", 502);
+          }
           current.payment = { ...paymentView(created), lastCheckedAt: nowIso(this.clock), settlementRecorded: false };
           if (current.cancellation?.state !== "stop_requested") current.state = "awaiting_payment";
           current.updatedAt = nowIso(this.clock);
@@ -568,21 +583,50 @@ export class SellerService {
       const order = state.orders[orderId];
       const quote = state.quotes[order.quoteId];
       try {
+        const resumeBuild = async (buildId) => {
+          const input = { buildId, order: this.getOrder(orderId), quote: structuredClone(quote) };
+          try {
+            return await this.producer.resume(input);
+          } catch (error) {
+            if (!["hypit_command_failed", "hypit_spawn_failed", "hypit_status_unavailable"].includes(error.code)
+              || this.store.snapshot().orders[orderId].cancellation?.state) throw error;
+            await this.store.transaction((draft) => {
+              const current = draft.orders[orderId];
+              current.production.attempts += 1;
+              current.updatedAt = nowIso(this.clock);
+              audit(draft, this.clock, "production.safe_build_reattach", orderId, { buildId, cause: error.code });
+            });
+            return await this.producer.resume({ ...input, order: this.getOrder(orderId) });
+          }
+        };
         let result;
         if (claim.mode === "resume") {
           if (typeof this.producer.resume !== "function") {
             throw new AppError("production_resume_unsupported", "Configured producer cannot resume a durable build", 503);
           }
-          result = await this.producer.resume({
-            buildId: claim.buildId,
-            order: publicOrder(order),
-            quote: structuredClone(quote),
-          });
+          result = await resumeBuild(claim.buildId);
         } else if (typeof this.producer.start === "function" && typeof this.producer.resume === "function") {
           const submit = claim.mode === "recover_prebuild"
             ? this.producer.recoverUnsubmitted.bind(this.producer)
             : this.producer.start.bind(this.producer);
-          const submission = await submit({ order: publicOrder(order), quote: structuredClone(quote) });
+          let submission;
+          try {
+            submission = await submit({ order: publicOrder(order), quote: structuredClone(quote) });
+          } catch (error) {
+            const safePreBuildRetry = claim.mode === "start"
+              && ["hypit_command_failed", "hypit_timeout", "hypit_spawn_failed"].includes(error.code)
+              && typeof this.producer.recoverUnsubmitted === "function"
+              && typeof this.producer.canRetryBeforeBuild === "function"
+              && await this.producer.canRetryBeforeBuild({ order: publicOrder(order), quote: structuredClone(quote) });
+            if (!safePreBuildRetry || this.store.snapshot().orders[orderId].cancellation?.state) throw error;
+            await this.store.transaction((draft) => {
+              const current = draft.orders[orderId];
+              current.production.attempts += 1;
+              current.updatedAt = nowIso(this.clock);
+              audit(draft, this.clock, "production.safe_prebuild_retry", orderId, { cause: error.code });
+            });
+            submission = await this.producer.recoverUnsubmitted({ order: this.getOrder(orderId), quote: structuredClone(quote) });
+          }
           if (typeof submission?.buildId !== "string" || submission.buildId === "") {
             throw new AppError("production_submission_invalid", "Producer did not return a durable build id", 502);
           }
@@ -593,11 +637,7 @@ export class SellerService {
             current.updatedAt = nowIso(this.clock);
             audit(draft, this.clock, "production.submitted", orderId, { buildId: submission.buildId });
           });
-          result = await this.producer.resume({
-            buildId: submission.buildId,
-            order: this.getOrder(orderId),
-            quote: structuredClone(quote),
-          });
+          result = await resumeBuild(submission.buildId);
         } else {
           result = await this.producer.execute({ order: publicOrder(order), quote: structuredClone(quote) });
         }
@@ -648,7 +688,8 @@ export class SellerService {
   #drainProductionQueue() {
     if (this.productionTasks.size >= this.maxConcurrentProductions) return;
     const next = Object.values(this.store.snapshot().orders)
-      .find((order) => order.production?.state === "queued" && order.payment?.authorization === "authorized");
+      .find((order) => order.production?.state === "queued"
+        && order.payment?.authorization === "authorized" && !order.cancellation?.state);
     if (next !== undefined) void this.#startProduction(next.id);
   }
 }

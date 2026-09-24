@@ -1,4 +1,8 @@
-# Track 2 Demo Storyline
+# Initial Demo Storyline (historical)
+
+This is the original planning draft, retained for context. It predates the current Hypit package
+design and payment lifecycle; [README](../../README.md) and
+[Payment lifecycle](../PAYMENT_LIFECYCLE.md) describe the implemented system.
 
 ## 核心概念
 

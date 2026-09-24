@@ -17,11 +17,20 @@ tool behind it:
 goal + assets + deadline + budget → purchasable production plan → payment → finished campaign
 ```
 
-Bitcoin is not the customer proposition. The customer proposition is pay-per-job procurement.
-Bitcoin is the machine-native payment rail that lets an agent pay a capability provider for one job
-without maintaining a subscription relationship with every provider. The agent may decide what is
+The customer proposition is pay-per-job procurement. Bitcoin is the machine-native payment rail
+that lets an agent pay a capability provider for one job without maintaining a subscription
+relationship with every provider. The agent may decide what is
 worth buying, but it may not invent its own authority: budget, scope, payment and external side
 effects remain bounded by explicit policy and durable evidence.
+
+### Find the payment code
+
+| Question | Start here |
+| --- | --- |
+| How does the Buyer sign a Bitcoin payment? | [`src/buyer/instant-wallet.mjs`](src/buyer/instant-wallet.mjs) validates the GoBTC PSBT and signs locally; [`src/gobtcpay.mjs`](src/gobtcpay.mjs) is the Seller's GoBTC client. |
+| Who decides whether money may be spent? | [`src/buyer/buyer-service.mjs`](src/buyer/buyer-service.mjs) owns authorization and the spend reservation; [`src/seller-service.mjs`](src/seller-service.mjs) gates production on accepted payment. |
+| What happens if payment, cancellation or delivery is disputed? | [`docs/PAYMENT_LIFECYCLE.md`](docs/PAYMENT_LIFECYCLE.md) maps the states; [`src/transaction-review.mjs`](src/transaction-review.mjs) lists unresolved obligations. |
+| How does the public payment preview work? | [`src/demo-payment.mjs`](src/demo-payment.mjs) provides interface-compatible simulated GoBTC responses for the preview. |
 
 ## What it does
 
@@ -48,14 +57,14 @@ ratios are 9:16, 1:1 and 16:9, with a hard ceiling of 30 output videos per order
 
 ## Product thesis and evidence
 
-Hirebit does not claim that small businesses have already adopted autonomous creative procurement.
-It starts from evidence-backed behavior and uses this prototype to test the remaining assumptions.
+Small-business AI marketing use and demand for video are established. Hirebit uses this prototype
+to test whether customers will delegate a bounded creative purchase to an agent.
 
 | What is supported today | Evidence | What it means for Hirebit |
 | --- | --- | --- |
-| Small businesses already use AI for marketing | QuickBooks reports that 41% of AI-using small businesses use it for marketing | Hirebit does not need to teach the market that AI can help with marketing |
+| Small businesses already use AI for marketing | QuickBooks reports that 41% of AI-using small businesses use it for marketing | Marketing is a familiar entry point for an AI-assisted purchase |
 | Video marketing is an established need | Wyzowl reports that 91% of businesses use video marketing; cost and time remain leading barriers for non-users | Short-form video is a practical first procurement category |
-| Tool fragmentation creates friction | inTandem reports that 43% of SMBs would pay more for a solution that reduced their total tool count | The value is reducing tool and workflow management, not adding another generator |
+| Tool fragmentation creates friction | inTandem reports that 43% of SMBs would pay more for a solution that reduced their total tool count | Hirebit combines service selection, purchase and delivery in one workflow |
 | Smaller businesses are cost-sensitive about AI | Bredin reports that 42% of AI-using U.S. SMBs use only free tools; cost-effectiveness is the top AI attribute for the smallest firms | A bounded, low-commitment job purchase is a reasonable model to test |
 
 Sources: [QuickBooks Small Business Insights 2026](https://quickbooks.intuit.com/r/small-business-data/small-business-insights/),
@@ -77,39 +86,33 @@ decision acceptance, budget utilization, time-to-campaign and output quality. La
 10 paid jobs, mainnet settlement, contribution margin and a second capability Seller before making
 broader market or ROI claims.
 
-## GoBTC Demo Day payment status
+## Payment modes and validation
 
-Fresh requests on 2026-09-21 to `POST /instant/wallet/register` and
-`POST /merchant/auth/register` returned an nginx HTTP 503 response instead of the documented JSON.
-The organizers confirmed in the official Discord that this matches the outage on their side, that
-recovery should not be assumed before Demo Day, and that clearly disclosed simulated responses are
-acceptable for the presentation while the real integration remains in place.
-
-Hirebit therefore changes only the external payment-provider boundary in Demo mode. The same Buyer
+The public preview uses simulated GoBTC responses at the provider boundary. The same Buyer
 mandate, budget reservation, package selection, Seller order, idempotency, payment gate, production
 and delivery workflow still runs. `PAYMENT_MODE=gobtcpay` selects the real merchant and instant-wallet
 clients; `PAYMENT_MODE=demo` selects interface-compatible simulated clients with explicit
 `simulated: true` and `mainnet: false` evidence, a non-payable recipient marker and no PSBT, private
 key, GoBTC request, Bitcoin transfer or transaction ID.
 
-This demonstrates the implemented Buyer–Seller purchasing and fulfillment workflow through the
-payment boundary. It does **not** claim successful GoBTC wallet registration, merchant onboarding,
-mainnet submission, settlement or on-chain proof.
+On 2026-09-21, fresh wallet and merchant registration requests returned nginx HTTP 503, and the
+organizers confirmed the outage in their official Discord. They approved a clearly labeled
+simulated-payment Demo Day presentation. This is dated historical evidence, not a current GoBTC
+availability check. Real wallet registration, merchant onboarding, mainnet submission and settlement
+remain pending live validation.
 
 ### Payment authorization is separate from settlement
 
-The real instant-payment path spends from the Buyer's GoBTC 2-of-3 multisig wallet toward the
-Seller's payment address. Hirebit does not create or control an intermediate escrow wallet. The
-Buyer first checks the selected order, recipient, amount, fee and policy limits against the PSBT,
-then signs locally. GoBTC accepts the submitted signature before later broadcasting and settling
-the payment on-chain. This is the protocol's instant authorization, not an escrow release after
-customer acceptance.
+The real instant-payment path uses the Buyer's GoBTC 2-of-3 multisig wallet and the Seller's
+payment address. The Buyer first checks the selected order, recipient, amount, fee and policy
+limits against the PSBT, then signs locally. GoBTC accepts the submitted signature; broadcasting
+and on-chain settlement follow later.
 
-| Signal | Hirebit action | What it does **not** prove |
+| Signal | Hirebit action | Payment state |
 | --- | --- | --- |
-| Payment `initiated` | Reserve the all-in customer price, including Seller-funded network-fee allowance; keep production locked | No payment has been accepted |
-| Payment `paid` | Commit the spend once and unlock this low-value production job | Seller has received settled BTC or an on-chain transaction exists |
-| `paidAt` plus transaction IDs | Record GoBTC-reported settlement evidence; do not run production again | Independent chain confirmation or resolution of service disputes |
+| Payment `initiated` | Reserve the all-in customer price, including Seller-funded network-fee allowance; keep production locked | Awaiting provider acceptance |
+| Payment `paid` | Commit the spend once and unlock this low-value production job | Instant authorization accepted; chain settlement pending |
+| `paidAt` plus transaction IDs | Record GoBTC-reported settlement evidence; do not run production again | Provider-reported chain settlement; disputes remain separately reviewable |
 
 If a submission times out, Hirebit reconciles the existing payment instead of blindly signing
 or submitting another one. The order's stable `externalId` and local reservation protect retries;
@@ -125,8 +128,11 @@ records the service price as **refund review required**, not as BTC already retu
 after production starts enters itemized-cost review. Delivered work can be disputed within 72
 hours with file-specific evidence. Quality disputes do not include a free rework; an approved
 quality refund is capped at 20% of the service price. Adjudication and a separate outgoing BTC
-refund are not automated. A read-only local review command lists unresolved obligations without printing payment IDs, wallet
-addresses or customer briefs: `npm run transaction:review -- demo`. See
+refund are not automated. A read-only local review command lists unresolved obligations without
+printing payment IDs, wallet addresses or customer briefs. Use
+`npm run transaction:review -- demo` for local preview state,
+`npm run transaction:review -- public-demo` for public preview state, or
+`npm run transaction:review -- mainnet` for separately configured real-payment state. See
 [payment lifecycle and edge cases](docs/PAYMENT_LIFECYCLE.md).
 Seller reconciliation checks the returned payment ID, amount, recipient address and rail before accepting `paid`;
 the Buyer also checks that the Seller order still matches the quote and invoice it accepted.
@@ -154,13 +160,13 @@ Demo mode follows the same *state boundary*: a synthetic `paid` has `paidAt: nul
 transactions. Its `simulatedAuthorizedAt` and `demo_receipt_` are simulation evidence only. Neither
 the demo nor local tests establish that a real GoBTC payment will settle successfully.
 
-This prototype assumes one instant-payment rail per invoice. The provider payment status alone
-does not independently prove who funded an invoice; an unexpected outside-wallet payment to the
-same address, a disputed provider commitment, key compromise, or a requested refund needs manual
-investigation. It is not a general-purpose escrow or high-value payment guarantee.
+This prototype assumes one instant-payment rail per invoice. An unexpected outside-wallet payment
+to the same address, a disputed provider commitment, key compromise, or a requested refund enters
+manual investigation. Hirebit gates low-value production on GoBTC's accepted `paid` status and
+tracks later settlement separately.
 
 Protocol references: [official build guide](https://pioneers.agnic.ai/build/bitcoin-pay) and
-[GoBTC Pay's multisig and settlement FAQ](https://gobtcpay.com/).
+[GoBTC Pay's website](https://gobtcpay.com/).
 
 ## System design
 
@@ -182,10 +188,21 @@ planning. Google Cloud Text-to-Speech supplies the supported production voices. 
 image-to-video source for eligible packages. For a supported reference-video order, DeepSeek extracts
 generic action choreography, framing, pacing and transition structure; Veo generates a new generic
 performance around the supplied product in two consecutive eight-second generations, with the first
-segment's final frame anchoring the continuation; and Hypit trims the result to the reference duration
-within an 8-16 second window and assembles approved narration and captions. The source person's identity, likeness, audio, captions and claims are
+segment's final frame anchoring the continuation. The two segments are paced to the reference duration
+within an 8-16 second window so the closing action is retained; Hypit then assembles narration and captions. The source person's identity, likeness, audio, captions and claims are
 not copied. Reference-video orders fail closed when generative motion is unavailable instead of being
 silently replaced by product-photo zooms.
+
+The current automated media checks verify technical delivery (duration, format, audio and frame integrity),
+not creative or typographic quality. The first 2026-09-24 local simulated-payment run exposed invented
+lettering in raw Veo footage. A later isolated run exercised the updated two-segment prompt and
+source-length pacing, then caught two caption defects in the completed Buyer package. The same
+generated motion and voice were rebuilt offline into three corrected 12.6-second QA videos; sampled
+frames no longer show the lettering or caption defects. The corrected files were validated and attached
+as revision `r2` of the same isolated Buyer order. The first delivery and its hashes remain available;
+all six original/revised video downloads passed SHA-256 checks through the authenticated Buyer endpoint.
+The Buyer page plays and offers all three corrected hooks. This local revision has not been deployed online. See
+[the dated reference-guided validation record](docs/REFERENCE_CLONE_ACCEPTANCE.md) for the exact evidence boundary.
 
 The Buyer and Seller are separate services. The Seller owns pricing and production capability; the
 Buyer owns customer intent, mandate enforcement and purchase-plan selection. This keeps a model-generated
@@ -285,26 +302,21 @@ Security controls are part of the transaction model, not a UI convention:
 More detail is in [docs/SECURITY.md](docs/SECURITY.md) and the root
 [security policy](SECURITY.md).
 
-## Quick start
+## Quick start: local UI
 
-Requirements: Node.js 22.15 or newer, Docker, Git and Corepack/pnpm for the pinned Hypit checkout.
+Requirements for the local console: Node.js 22.15 or newer and Git. Full video production
+additionally requires Docker and Corepack/pnpm for the pinned Hypit checkout.
 
 ```bash
 git clone --recurse-submodules https://github.com/helen-bird/hirebit.git
 cd hirebit
 npm ci
-npm run hypit:setup
-(cd vendor/hypit && corepack pnpm install --frozen-lockfile)
 cp .env.example .env
 ```
 
-`npm run hypit:setup` pins Hypit to the tested commit and applies the committed downloader patch used
-for supported TikTok pages. Review Hypit's own license before redistributing or operating it.
-
-These commands start the local services using simulated payments. Intent interpretation and actual
-video production still need provider configuration; a fresh checkout has no usable provider
-credentials or worker attestation. Configure `.env` using the provider section below, then start the
-two services in separate terminals:
+The commands below start the **local UI and simulated-payment services**. A fresh checkout can open
+the console; completing an order also requires the provider setup in the next section. Start the two
+services in separate terminals:
 
 ```bash
 npm run demo:seller
@@ -312,7 +324,39 @@ npm run demo:buyer
 ```
 
 Open `http://127.0.0.1:8788/console/`. Runtime tokens are created under ignored local state; never
-copy them into documentation, screenshots or commits.
+copy them into documentation, screenshots or commits. The local Buyer token used by the sign-in form
+is stored in `.buyer/api-token` on that machine; do not put it in a URL.
+
+### Complete a local order
+
+Configure the following **before** submitting a brief. These are
+opt-in paid services, even though `PAYMENT_MODE=demo` never transfers Bitcoin:
+
+1. Prepare the pinned Hypit checkout and its downloader patches:
+
+   ```bash
+   npm run hypit:setup
+   (cd vendor/hypit && corepack pnpm install --frozen-lockfile)
+   ```
+
+   Review [Hypit's license](vendor/hypit/LICENSE) before redistributing or operating it.
+2. Put `DEEPSEEK_API_KEY` in the ignored `.env`, or store it under macOS Keychain service
+   `shared-model-gateway`, account `deepseek-api`. Do not commit or paste the value into an issue.
+3. Set `GOOGLE_CLOUD_PROJECT`, configure Google Application Default Credentials, enable billing and
+   the required TTS/Vertex APIs in your own project, and review the current commercial-use terms.
+   Only after approval, set `GOOGLE_TTS_COMMERCIAL_USE_APPROVED=1`, `GOOGLE_VEO_ENABLED=1`, and
+   `GOOGLE_VEO_COMMERCIAL_USE_APPROVED=1` in the ignored `.env`.
+4. Start Docker, copy `productions/hypit.runtime.example.json` to the ignored
+   `productions/hypit.runtime.json`, and replace its machine-specific executable paths. Complete
+   [production acceptance](docs/PRODUCTION_ACCEPTANCE.md), build the worker with
+   `npm run worker:image`, and run `npm run worker:verify`. Set
+   `HYPIT_WORKER_ISOLATION_VERIFIED=1` only after that check passes on this machine.
+
+Restart both local services after changing `.env` so they load the approved provider configuration.
+
+Do not run production acceptance or submit a campaign merely to check installation: those actions
+can call paid providers. The public demo has additional restrictions in
+[deployment instructions](docs/PUBLIC_DEMO_DEPLOYMENT.md).
 
 ## Production providers
 
@@ -349,6 +393,11 @@ npm run repo:check
 npm test
 ```
 
+`repo:check` examines staged Git objects and current committable working-tree files. Ignored
+runtime credentials remain outside its scan; stage the intended release files and run it again
+before committing. A local green result is separate from the full browser workflow and paid-provider
+acceptance checks.
+
 The test suite covers mandate extraction and revisions, quote selection, budget enforcement,
 idempotency, payment validation, recovery, media validation, reference planning, campaign packaging,
 public-demo quotas and API security. Docker isolation has a separate host-level check:
@@ -362,24 +411,36 @@ npm run worker:verify
 
 ```text
 src/buyer/       intent, clarification, policy, comparison and purchase orchestration
-src/             Seller, payment adapters, production compiler and security utilities
+src/buyer/instant-wallet.mjs   Buyer PSBT checks and local signing
+src/buyer/buyer-service.mjs    spend authorization, reservation and recovery
+src/gobtcpay.mjs               real GoBTC merchant client
+src/demo-payment.mjs           simulated provider boundary for preview
+src/seller-service.mjs         order, payment gate and fulfillment state
+src/transaction-review.mjs    unresolved payment and refund obligations
+src/hypit-commission-compiler.mjs   order-bound Hypit production
 web/             focused customer console
 config/          public policy, catalog and workflow definitions
-productions/     authored Hypit fixtures and curated preview evidence
+productions/     historical Arduino validation fixtures and curated preview evidence, not customer orders
 docker/          isolated production worker
 cloudflare/      optional public gateway
 scripts/         onboarding, validation and reproducible setup tools
 test/            unit and integration tests
 docs/            operations, acceptance and threat-model documentation
+docs/archive/    original planning notes; current behavior is documented above
 ```
+
+The repository includes historical Arduino acceptance fixtures for all four packages. The current
+customer example uses [the cotton-swab product photo](product_pic.jpeg) and a reference-led brief;
+its campaign videos are delivered through the authenticated demo workflow. The dated
+[reference validation record](docs/REFERENCE_CLONE_ACCEPTANCE.md) distinguishes tested example
+outputs from the current production path.
 
 ## Known limits
 
-- This is a single-operator reference implementation, not a hardened multi-tenant SaaS deployment.
-- GoBTC wallet and merchant registration were blocked by the organizer-confirmed HTTP 503 outage on
-  2026-09-21. Demo mode exercises the implemented payment boundary but is not mainnet evidence.
-- A reference video guides generic action choreography and structure; Hirebit does not reproduce the
-  source person's identity or promise pixel-identical cloning.
+- The current deployment serves one operator; independent customer accounts and tenancy require additional work.
+- The public preview runs simulated GoBTC responses. Mainnet registration, payment and settlement
+  await live validation; the 2026-09-21 outage is recorded above.
+- Reference-guided production adapts the source action and structure with a generic generated presenter.
 - Reference-guided output uses two continuous Veo segments and follows the source duration within an
   8-16 second window; a continuous static hold over two seconds is rejected.
 - Provider calls may incur charges. Keep quotas and billing alerts enabled before exposing a URL.

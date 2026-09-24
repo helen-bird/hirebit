@@ -524,7 +524,8 @@ export function createBuyerServer({
         const campaignId = decodeURIComponent(packageFileMatch[1]);
         const relative = packageFileMatch[2].split("/").map(decodeURIComponent).join("/");
         const campaign = service.getCampaign(campaignId);
-        const fileRecord = campaign.package?.files?.find((item) => item.path === relative);
+        const packages = [campaign.package, ...(campaign.packageHistory ?? [])];
+        const fileRecord = packages.flatMap((item) => item?.files ?? []).find((item) => item.path === relative);
         if (!fileRecord) throw new AppError("package_file_not_found", "Campaign package file not found", 404);
         const base = resolve(dataDir, "campaign-packages", campaignId.replace(/[^a-zA-Z0-9._-]/gu, "-"));
         const selected = await resolveRegularFile(base, relative, "package_file_not_found");

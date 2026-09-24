@@ -1,3 +1,10 @@
+# Hackathon notes (historical)
+
+These are the original challenge notes, not a current setup or acceptance checklist. The
+[README](../../README.md), [production acceptance](../PRODUCTION_ACCEPTANCE.md), and
+[payment lifecycle](../PAYMENT_LIFECYCLE.md) distinguish implemented, simulated, and unverified
+behavior. Organizer-approved payment simulation during the GoBTC outage is documented there.
+
 # build guide
 https://pioneers.agnic.ai/build/bitcoin-pay
 

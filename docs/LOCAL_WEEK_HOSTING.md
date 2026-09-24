@@ -46,14 +46,15 @@ change other projects, remove render containers, delete generated videos or eras
 After a machine reboot, log in, start Docker if needed, and check `ops:status` plus Seller `/ready`.
 A user LaunchAgent starts at login; it cannot unlock a FileVault-protected machine for you.
 
-The original Pages URL remains unchanged. A **named tunnel with a stable public hostname requires
-a domain on Cloudflare**. The named-tunnel cutover is recorded below; the earlier Quick Tunnel
-could change hostname on restart or lose its server-side registration.
+The original Pages URL remains unchanged. The current deployment uses a named tunnel and a stable
+hostname under the Cloudflare-managed domain, as recorded below. A fresh deployment needs its own
+Cloudflare-managed domain and named tunnel. The earlier Quick Tunnel could change hostname on restart
+or lose its server-side registration.
 Docker's `unless-stopped` restart policy cannot repair an expired Quick Tunnel registration.
 The supervisor deliberately does not silently create replacement random tunnels or retain broad
 Cloudflare account credentials for unattended redeployments.
 
-Once a domain is approved, configure a named tunnel for **only** Buyer `127.0.0.1:8788`, retaining
+For a fresh deployment, configure a named tunnel for **only** Buyer `127.0.0.1:8788`, retaining
 the host allowlist, exact frontend origin, token gate and payment restrictions. A native cloudflared
 binary and an owner-only token file can be specified in `.local-ops/config.json`:
 
