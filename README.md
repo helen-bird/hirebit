@@ -6,10 +6,11 @@
 tools. Hirebit's AI Buyer clarifies a brief, compares four Seller packages, buys the best eligible
 scope within budget, and validates delivery.
 
-**Why Bitcoin.** GoBTC Pay is the native-BTC rail for a job between Buyer and Seller agents, so
-Hirebit can purchase a service without a Seller-specific subscription or credits. Its multisig
-rail accepts payment in seconds while on-chain settlement follows later. AI ranks options; code
-enforces the exact mandate, budget, approval mode, PSBT and retries.
+**Why Bitcoin.** The Buyer agent can pay another service agent in BTC from its own 2-of-3 wallet,
+without a Seller-specific subscription or credits. It checks the recipient, amount and miner fee
+in the PSBT before signing locally. GoBTC's `paid` acceptance gives the Seller a seconds-scale
+signal to start a bounded job; BTC settles on-chain later. Code enforces the mandate and spending
+authority while AI chooses which service is worth buying.
 
 **Transaction.** Brief + assets → clarified mandate and quotes → budget reservation → Seller
 invoice → Buyer validates and signs the PSBT → GoBTC `paid` → production and delivery → later
@@ -28,6 +29,7 @@ exist, but wallet onboarding, mainnet payment and settlement remain unverified l
 
 ## Contents
 
+- [Bitcoin's role in Hirebit](#bitcoins-role-in-hirebit)
 - [Find the payment code](#find-the-payment-code)
 - [What it does](#what-it-does)
 - [Product thesis and evidence](#product-thesis-and-evidence)
@@ -42,6 +44,23 @@ exist, but wallet onboarding, mainnet payment and settlement remain unverified l
 - [Repository map](#repository-map)
 - [Known limits](#known-limits)
 - [License and third-party code](#license-and-third-party-code)
+
+## Bitcoin's role in Hirebit
+
+The video service is the first purchase category; the Bitcoin-specific mechanism is the payment
+between autonomous Buyer and Seller agents. Both use the same BTC rail rather than a separate
+Seller credit balance or card checkout. Native BTC can cross borders where the service is available,
+although Hirebit has not verified a live cross-border or mainnet payment.
+
+| What Bitcoin enables here | What the code actually does |
+| --- | --- |
+| Buyer-authorized, programmatic spending | The agent holds a local signing key for its GoBTC 2-of-3 wallet. It validates every PSBT input, the Seller output, change and network fee before signing; mandate and account budgets bound when it may submit. |
+| A small payment for a specific job | Seller creates a satoshi-denominated invoice with a stable order ID. The all-in customer price includes a Seller-funded miner-fee allowance; the Buyer will not sign if invoice plus actual fee exceeds its authorization. Network fees and dust still impose a practical minimum. |
+| Seller can act before chain settlement | GoBTC's `paid` status records its acceptance of the Buyer's signature. Hirebit unlocks production once for that exact order, then records `paidAt` and transaction IDs separately when GoBTC reports later settlement. `paid` is a seconds-scale authorization signal, not an on-chain confirmation. |
+
+The fulfillment gate is GoBTC's accepted `paid` commitment. The Seller starts production at that
+point; delivery disputes and any refunds follow a separate review process.
+The [payment lifecycle](docs/PAYMENT_LIFECYCLE.md) describes the money and work at each stage.
 
 ## Find the payment code
 
