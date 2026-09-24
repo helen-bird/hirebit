@@ -234,15 +234,19 @@ function validateCreate(input) {
     && !["auto_within_budget", "confirm_before_purchase"].includes(context.purchaseMode)) {
     throw new AppError("invalid_delegation", "context.purchaseMode is invalid");
   }
+  if (context.platform !== undefined && context.platform !== "TikTok") {
+    throw new AppError("unsupported_reference_video_channel", "Only TikTok campaigns are supported", 400);
+  }
   if (context.referenceUploadId !== undefined
     && !/^[a-f0-9]{48}\.(?:jpg|png)$/u.test(context.referenceUploadId)) {
     throw new AppError("invalid_delegation", "context.referenceUploadId is invalid");
   }
   const normalizedContext = structuredClone(context);
+  normalizedContext.platform = "TikTok";
   if (context.referenceVideoUrl !== undefined) {
     normalizedContext.referenceVideoUrl = safeSocialVideoUrl(
       context.referenceVideoUrl,
-      context.platform,
+      "TikTok",
       "context.referenceVideoUrl",
     );
   }

@@ -88,7 +88,7 @@ textarea, input, select {
 }
 textarea { resize: vertical; min-height: 136px; line-height: 1.55; }
 textarea:focus, input:focus, select:focus { border-color: rgba(247,147,26,.7); box-shadow: 0 0 0 3px rgba(247,147,26,.08); }
-.form-row { display: grid; grid-template-columns: .72fr 1.28fr; gap: 10px; margin-top: 13px; }
+.form-row { display: grid; grid-template-columns: 1fr; margin-top: 13px; }
 .button {
   border: 0; border-radius: 11px; min-height: 47px; padding: 0 17px; font-weight: 800; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center; gap: 13px; transition: transform .15s, filter .15s;

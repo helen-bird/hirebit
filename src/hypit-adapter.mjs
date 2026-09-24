@@ -216,7 +216,7 @@ export async function downloadSocialReferenceVideo(value, {
 } = {}) {
   const platform = socialVideoPlatform(value);
   if (platform === null) {
-    throw new AppError("reference_video_url_unsupported", "Reference video is not a supported TikTok, Instagram, or YouTube page", 422);
+    throw new AppError("reference_video_url_unsupported", "Reference video must be a TikTok video page", 422);
   }
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new AppError("reference_video_limit_invalid", "Reference video size limit is invalid", 503);
@@ -922,8 +922,12 @@ export class HypitAdapter {
         evidenceUrl: quote.brief?.evidenceUrl,
       })) {
         if (typeof value === "string") {
+          const isReferenceVideo = field === "evidenceUrl";
+          if (isReferenceVideo && socialVideoPlatform(value) !== "TikTok") {
+            throw new AppError("reference_video_url_unsupported", "Reference video must be a TikTok video page", 422);
+          }
           const basename = field === "referenceUrl" ? "reference" : "evidence";
-          const maxBytes = field === "evidenceUrl" && socialVideoPlatform(value) !== null
+          const maxBytes = isReferenceVideo
             ? MAX_SOCIAL_REFERENCE_VIDEO_BYTES
             : Number(workflow.maxExternalAssetBytes ?? 25 * 1024 * 1024);
           const trustedFilename = field === "referenceUrl"
@@ -939,7 +943,7 @@ export class HypitAdapter {
                 basename,
                 maxBytes,
               })
-              : field === "evidenceUrl" && socialVideoPlatform(value) !== null
+              : isReferenceVideo
               ? await this.referenceVideoFetcher(value, {
                 directory: inputDir,
                 basename,

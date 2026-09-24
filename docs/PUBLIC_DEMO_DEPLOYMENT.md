@@ -45,7 +45,7 @@ authorize or submit a Bitcoin payment.
 - There is no separate per-order ceiling. Every order remains bounded by its customer-authorized
   mandate, while Buyer daily and lifetime ceilings are both 60,000 sats. The startup guard still
   refuses public mode with real Bitcoin enabled.
-- Reference URLs are constrained to supported providers, revalidated through redirects and fetched
+- TikTok reference-video URLs are allowlisted, revalidated through redirects and fetched
   into order-private storage. Required reference processing fails closed.
 - Direct campaign creation and mainnet payment are disabled in public mode.
 

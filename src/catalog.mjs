@@ -9,7 +9,7 @@ import {
   productionLanguageForAccent,
   productionVariantCount,
 } from "./production-contract.mjs";
-import { safeExternalUrl } from "./security.mjs";
+import { safeExternalUrl, safeSocialVideoUrl } from "./security.mjs";
 
 const SUPPORTED_LANGUAGE_CODES = Object.freeze(SUPPORTED_PRODUCTION_LANGUAGES.map((item) => item.code));
 const PRODUCT_LANGUAGE_LIMITATIONS = Object.freeze([
@@ -210,7 +210,7 @@ export function calculateQuote(input) {
   const mode = PRODUCTION_MODES[productionMode];
   if (mode === undefined) throw new AppError("invalid_production_mode", `Unknown production mode: ${productionMode}`);
   if (input.brief?.referenceUrl !== undefined) safeExternalUrl(input.brief.referenceUrl, "brief.referenceUrl");
-  if (input.brief?.evidenceUrl !== undefined) safeExternalUrl(input.brief.evidenceUrl, "brief.evidenceUrl");
+  if (input.brief?.evidenceUrl !== undefined) safeSocialVideoUrl(input.brief.evidenceUrl, "TikTok", "brief.evidenceUrl");
   const requirements = creativeRequirements(input.brief, product);
 
   const hookVariants = input.addOns?.hookVariants ?? 1;

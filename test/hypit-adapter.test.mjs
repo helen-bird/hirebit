@@ -64,7 +64,7 @@ test("Hypit social reference fetch localizes a platform page as an order-private
   const stateHome = join(directory, "state");
   let commandCalls = 0;
   const result = await downloadSocialReferenceVideo(
-    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+    "https://www.tiktok.com/@creator/video/7461234567890123456",
     {
       directory: join(directory, "inputs"),
       stateHome,
@@ -74,7 +74,7 @@ test("Hypit social reference fetch localizes a platform page as an order-private
         assert.equal(program, "/fake/hypit");
         if (args[1] === "prepare-fetch") return { stdout: JSON.stringify({ ready: true }), stderr: "" };
         assert.equal(options.env.HYPIT_FETCH_MAX_BYTES, "1000000000");
-        assert.deepEqual(args.slice(0, 3), ["media", "fetch", "https://www.youtube.com/shorts/dQw4w9WgXcQ"]);
+        assert.deepEqual(args.slice(0, 3), ["media", "fetch", "https://www.tiktok.com/@creator/video/7461234567890123456"]);
         const destination = args[args.indexOf("--to") + 1];
         await writeFile(destination, "fake-reference-video");
         return { stdout: JSON.stringify({ path: destination }), stderr: "" };
@@ -82,11 +82,11 @@ test("Hypit social reference fetch localizes a platform page as an order-private
     },
   );
   assert.equal(result.mediaType, "video/mp4");
-  assert.equal(result.sourcePlatform, "YouTube Shorts");
+  assert.equal(result.sourcePlatform, "TikTok");
   assert.equal(result.fetchedBy, "hypit-media-fetch");
   assert.match(result.sha256, /^[a-f0-9]{64}$/u);
   const cached = await downloadSocialReferenceVideo(
-    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+    "https://www.tiktok.com/@creator/video/7461234567890123456",
     {
       directory: join(directory, "second-order-inputs"),
       stateHome,
@@ -99,11 +99,23 @@ test("Hypit social reference fetch localizes a platform page as an order-private
   assert.equal(commandCalls, 2);
 });
 
+test("Hypit reference fetch rejects non-TikTok pages before any command", async () => {
+  for (const url of [
+    "https://www.instagram.com/reel/DFa1b2C3d4E/",
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+  ]) {
+    await assert.rejects(downloadSocialReferenceVideo(url, {
+      directory: join(tmpdir(), "hypit-unsupported-reference"),
+      commandRunner: async () => { throw new Error("Downloader must not start"); },
+    }), (error) => error.code === "reference_video_url_unsupported");
+  }
+});
+
 test("social reference rejects oversized fetches and removes the incomplete order file", async () => {
   const directory = await mkdtemp(join(tmpdir(), "hypit-social-reference-limit-"));
   const inputs = join(directory, "inputs");
   await assert.rejects(
-    downloadSocialReferenceVideo("https://www.youtube.com/shorts/dQw4w9WgXcQ", {
+    downloadSocialReferenceVideo("https://www.tiktok.com/@creator/video/7461234567890123456", {
       directory: inputs,
       stateHome: join(directory, "state"),
       hypitBin: "/fake/hypit",
@@ -122,7 +134,7 @@ test("social reference rejects oversized fetches and removes the incomplete orde
 
 test("in-flight Hypit size rejection remains a clear 413 instead of a source outage", async () => {
   const directory = await mkdtemp(join(tmpdir(), "hypit-social-reference-stream-limit-"));
-  await assert.rejects(downloadSocialReferenceVideo("https://www.youtube.com/shorts/dQw4w9WgXcQ", {
+  await assert.rejects(downloadSocialReferenceVideo("https://www.tiktok.com/@creator/video/7461234567890123456", {
     directory: join(directory, "inputs"),
     stateHome: join(directory, "state"),
     hypitBin: "/fake/hypit",

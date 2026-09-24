@@ -27,25 +27,25 @@ test("API Bearer authentication uses a constant-time digest comparison", () => {
   assert.equal(secretEqual("a".repeat(32), "b".repeat(32)), false);
 });
 
-test("reference video links match the selected social channel", () => {
+test("reference video links accept TikTok and reject other social channels", () => {
   assert.equal(
     safeSocialVideoUrl("https://www.tiktok.com/@creator/video/7461234567890123456#share", "TikTok"),
     "https://www.tiktok.com/@creator/video/7461234567890123456",
   );
-  assert.equal(
-    safeSocialVideoUrl("https://www.instagram.com/reel/DFa1b2C3d4E/", "Instagram Reels"),
-    "https://www.instagram.com/reel/DFa1b2C3d4E/",
+  assert.throws(
+    () => safeSocialVideoUrl("https://www.instagram.com/reel/DFa1b2C3d4E/", "Instagram Reels"),
+    (error) => error.code === "unsupported_reference_video_channel",
   );
-  assert.equal(
-    safeSocialVideoUrl("https://www.youtube.com/shorts/dQw4w9WgXcQ", "YouTube Shorts"),
-    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+  assert.throws(
+    () => safeSocialVideoUrl("https://www.youtube.com/shorts/dQw4w9WgXcQ", "YouTube Shorts"),
+    (error) => error.code === "unsupported_reference_video_channel",
   );
   assert.throws(
     () => safeSocialVideoUrl("https://www.youtube.com/shorts/dQw4w9WgXcQ", "TikTok"),
     (error) => error.code === "reference_video_channel_mismatch",
   );
   assert.throws(
-    () => safeSocialVideoUrl("https://youtube.example/shorts/dQw4w9WgXcQ", "YouTube Shorts"),
+    () => safeSocialVideoUrl("https://youtube.example/shorts/dQw4w9WgXcQ", "TikTok"),
     (error) => error.code === "reference_video_channel_mismatch",
   );
 });

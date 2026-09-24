@@ -248,18 +248,6 @@ const SOCIAL_VIDEO_RULES = {
       || (["vm.tiktok.com", "vt.tiktok.com"].includes(url.hostname) && url.pathname.length > 1),
     example: "https://www.tiktok.com/@creator/video/7461234567890123456",
   },
-  "Instagram Reels": {
-    hosts: ["instagram.com"],
-    path: (url) => /^\/(?:reel|reels|p)\/[A-Za-z0-9_-]+(?:\/|$)/u.test(url.pathname),
-    example: "https://www.instagram.com/reel/DFa1b2C3d4E/",
-  },
-  "YouTube Shorts": {
-    hosts: ["youtube.com", "youtu.be"],
-    path: (url) => url.hostname === "youtu.be"
-      ? /^\/[A-Za-z0-9_-]{6,15}(?:\/|$)/u.test(url.pathname)
-      : /^\/shorts\/[A-Za-z0-9_-]{6,15}(?:\/|$)/u.test(url.pathname),
-    example: "https://www.youtube.com/shorts/dQw4w9WgXcQ",
-  },
 };
 
 function hostMatches(hostname, roots) {
@@ -284,7 +272,7 @@ export function socialVideoPlatform(value) {
 export function safeSocialVideoUrl(value, platform, label = "Reference video") {
   const rule = SOCIAL_VIDEO_RULES[platform];
   if (rule === undefined) {
-    throw new AppError("unsupported_reference_video_channel", `${label} requires a supported Channel`, 400);
+    throw new AppError("unsupported_reference_video_channel", `${label} requires TikTok`, 400);
   }
   const normalized = safeExternalUrl(value, label);
   const url = new URL(normalized);

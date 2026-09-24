@@ -67,39 +67,16 @@ const DEMO_VIDEO_URL = "https://www.tiktok.com/@bilintinamakeup/video/6798977602
 
 const presets = {
   auto: {
-    platform: "TikTok",
     purchaseMode: "auto_within_budget",
     request: "Create a conversion-focused TikTok launch campaign for Precision Beauty Swabs, designed for makeup users who want precise, easy cleanup. Use an energetic United States English voice and product-led visuals. Choose the right number of opening hooks for launch testing. Keep spend under 2,000 sats and deliver within 60 minutes.",
   },
   confirm: {
-    platform: "TikTok",
     purchaseMode: "confirm_before_purchase",
     request: "Create a conversion-focused TikTok launch campaign for Precision Beauty Swabs, designed for makeup users who want precise, easy cleanup. Use an energetic United States English voice and product-led visuals. Choose the right number of opening hooks for launch testing. Keep spend under 2,000 sats and deliver within 60 minutes.",
   },
 };
 
-const referenceVideoChannels = {
-  TikTok: {
-    label: "TIKTOK LINK",
-    placeholder: "https://www.tiktok.com/@creator/video/7461234567890123456",
-    matches: (url) => (url.hostname === "tiktok.com" || url.hostname.endsWith(".tiktok.com"))
-      && (/^\/@[^/]+\/video\/\d+(?:\/|$)/u.test(url.pathname)
-        || (["vm.tiktok.com", "vt.tiktok.com"].includes(url.hostname) && url.pathname.length > 1)),
-  },
-  "Instagram Reels": {
-    label: "INSTAGRAM LINK",
-    placeholder: "https://www.instagram.com/reel/DFa1b2C3d4E/",
-    matches: (url) => (url.hostname === "instagram.com" || url.hostname.endsWith(".instagram.com"))
-      && /^\/(?:reel|reels|p)\/[A-Za-z0-9_-]+(?:\/|$)/u.test(url.pathname),
-  },
-  "YouTube Shorts": {
-    label: "YOUTUBE LINK",
-    placeholder: "https://www.youtube.com/shorts/dQw4w9WgXcQ",
-    matches: (url) => ((url.hostname === "youtube.com" || url.hostname.endsWith(".youtube.com"))
-      && /^\/shorts\/[A-Za-z0-9_-]{6,15}(?:\/|$)/u.test(url.pathname))
-      || (url.hostname === "youtu.be" && /^\/[A-Za-z0-9_-]{6,15}(?:\/|$)/u.test(url.pathname)),
-  },
-};
+const TIKTOK_REFERENCE_EXAMPLE = "https://www.tiktok.com/@creator/video/7461234567890123456";
 
 function updateCharacterCount() {
   const input = $("#request");
@@ -121,26 +98,17 @@ function selectedImage() {
 function referenceVideoUrl() {
   const value = $("#reference-video-url").value.trim();
   if (!value) return null;
-  const channel = $("#platform").value;
-  const rule = referenceVideoChannels[channel];
   let parsed;
-  try { parsed = new URL(value); } catch { throw new Error(`Paste a valid ${channel} video link`); }
+  try { parsed = new URL(value); } catch { throw new Error("Paste a valid TikTok video link"); }
   if (parsed.protocol !== "https:" || parsed.username || parsed.password || !["", "443"].includes(parsed.port)) {
     throw new Error("Reference video must use HTTPS without credentials or a custom port");
   }
   parsed.hostname = parsed.hostname.toLowerCase().replace(/\.$/u, "");
-  if (!rule?.matches(parsed)) throw new Error(`Paste a ${channel} link like ${rule?.placeholder ?? "the selected channel"}`);
+  const isTikTok = (parsed.hostname === "tiktok.com" || parsed.hostname.endsWith(".tiktok.com"))
+    && (/^\/@[^/]+\/video\/\d+(?:\/|$)/u.test(parsed.pathname)
+      || (["vm.tiktok.com", "vt.tiktok.com"].includes(parsed.hostname) && parsed.pathname.length > 1));
+  if (!isTikTok) throw new Error(`Paste a TikTok video link like ${TIKTOK_REFERENCE_EXAMPLE}`);
   return parsed.href;
-}
-
-function updateReferenceVideoHint() {
-  const rule = referenceVideoChannels[$("#platform").value];
-  if (!rule) return;
-  $("#reference-video-url").placeholder = rule.placeholder;
-  $("#reference-video-kind").textContent = rule.label;
-  const input = $("#reference-video-url");
-  if ($("#platform").value !== "TikTok" && input.value.trim() === DEMO_VIDEO_URL) input.value = "";
-  if ($("#platform").value === "TikTok" && input.value.trim() === "") input.value = DEMO_VIDEO_URL;
 }
 
 function updateImageName() {
@@ -176,8 +144,6 @@ function selectPreset(name) {
   focusWorkspace("brief");
   selectedPurchaseMode = preset.purchaseMode;
   $("#request").value = preset.request;
-  $("#platform").value = preset.platform;
-  updateReferenceVideoHint();
   document.querySelectorAll(".preset").forEach((button) => {
     const selected = button.dataset.preset === name;
     button.classList.toggle("selected", selected);
@@ -402,11 +368,9 @@ function restoreBrief(delegation) {
     button.setAttribute("aria-pressed", String(selected));
   });
   $("#request").value = delegation.input?.request ?? presets.auto.request;
-  $("#platform").value = context.platform ?? "TikTok";
-  $("#reference-video-url").value = context.referenceVideoUrl ?? (context.platform === "TikTok" ? DEMO_VIDEO_URL : "");
+  $("#reference-video-url").value = context.referenceVideoUrl ?? DEMO_VIDEO_URL;
   reusableReferenceUploadId = context.referenceUploadId ?? delegation.mandate?.referenceUploadId ?? null;
   $("#product-image-file").value = "";
-  updateReferenceVideoHint();
   updateImageName();
   updateCharacterCount();
   $("#request").focus();
@@ -1612,7 +1576,7 @@ $("#delegation-form").addEventListener("submit", async (event) => {
       submitLabel.textContent = "Interpreting…";
     }
     const context = {
-      platform: $("#platform").value,
+      platform: "TikTok",
       purchaseMode: selectedPurchaseMode,
       ...(referenceUploadId ? { referenceUploadId } : {}),
       ...(videoUrl ? { referenceVideoUrl: videoUrl } : {}),
@@ -1641,7 +1605,6 @@ document.querySelectorAll(".preset").forEach((button) => {
 });
 $("#request").addEventListener("input", updateCharacterCount);
 $("#product-image-file").addEventListener("change", updateImageName);
-$("#platform").addEventListener("change", updateReferenceVideoHint);
 selectPreset("auto");
 updateImageName();
 resizeWorkspace();

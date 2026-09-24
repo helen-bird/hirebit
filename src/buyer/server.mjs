@@ -173,12 +173,15 @@ export function validatePublicDemoDelegation(input, { maxRequestChars = 1000 } =
   const context = input.context !== null && typeof input.context === "object" && !Array.isArray(input.context)
     ? { ...input.context }
     : input.context;
+  if (context?.platform !== undefined && context.platform !== "TikTok") {
+    throw new AppError("unsupported_reference_video_channel", "Only TikTok campaigns are supported", 400);
+  }
   const referenceVideoUrl = context?.referenceVideoUrl;
   if (referenceVideoUrl !== undefined) {
     // The exact social host and path allowlist is the public-Demo trust boundary here.
     // Do not reject Clash/TUN fake-IP DNS answers (198.18.0.0/15); Hypit fetches the
     // allowlisted page through the host network and local DNS pinning would be a false positive.
-    safeSocialVideoUrl(referenceVideoUrl, context?.platform, "context.referenceVideoUrl");
+    safeSocialVideoUrl(referenceVideoUrl, "TikTok", "context.referenceVideoUrl");
   }
   if (context !== null && typeof context === "object" && !Array.isArray(context)) delete context.referenceVideoUrl;
   rejectPublicDemoExternalUrls({ ...input, context });

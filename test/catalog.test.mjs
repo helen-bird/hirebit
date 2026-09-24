@@ -81,6 +81,15 @@ test("reference-video orders require a product image and the Product Showcase pa
     productId: "proof_demo",
     brief: { evidenceUrl: referenceBrief.evidenceUrl },
   }), (error) => error.code === "reference_product_image_required");
+  for (const evidenceUrl of [
+    "https://www.instagram.com/reel/DFa1b2C3d4E/",
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+  ]) {
+    assert.throws(() => calculateQuote({
+      productId: "proof_demo",
+      brief: { ...referenceBrief, evidenceUrl },
+    }), (error) => error.code === "reference_video_channel_mismatch");
+  }
 });
 
 test("quote rejects output matrices the production compiler cannot fulfill", () => {

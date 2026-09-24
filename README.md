@@ -43,6 +43,8 @@ The customer journey is intentionally short:
 5. Let the Buyer purchase the best eligible plan within budget, or approve it first.
 6. Follow production progress and download the finished video.
 
+The current campaign flow accepts a product image and a public TikTok video page as its visual references.
+
 Hirebit currently offers four Hypit-backed production packages:
 
 | Package | Best for | Production shape |

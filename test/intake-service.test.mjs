@@ -827,7 +827,7 @@ test("expired preflight deadline gives an actionable campaign failure without cr
   assert.equal(buyer.created.length, 0);
 });
 
-test("reference video URL is normalized, scope-bound, and supplied as production evidence", async () => {
+test("TikTok reference video URL is normalized, scope-bound, and supplied as production evidence", async () => {
   const automatic = extraction({
     authorizationMode: "auto_within_budget",
     autoAuthorizationExplicit: true,
@@ -842,49 +842,56 @@ test("reference video URL is normalized, scope-bound, and supplied as production
     input: {
       request: "Create an Acme conversion video with a hard cap of 2500 sats.",
       context: {
-        platform: "Instagram Reels",
+        platform: "TikTok",
         purchaseMode: "auto_within_budget",
-        referenceVideoUrl: "https://www.instagram.com/reel/DFa1b2C3d4E/#preview",
+        referenceVideoUrl: "https://www.tiktok.com/@creator/video/7461234567890123456#preview",
       },
     },
     idempotencyKey: "delegation-reference-video",
   });
-  assert.equal(delegation.mandate.referenceVideoUrl, "https://www.instagram.com/reel/DFa1b2C3d4E/");
+  assert.equal(delegation.mandate.referenceVideoUrl, "https://www.tiktok.com/@creator/video/7461234567890123456");
   assert.equal(delegation.mandate.brief.referenceUrl, null);
-  assert.equal(delegation.mandate.brief.evidenceUrl, "https://www.instagram.com/reel/DFa1b2C3d4E/");
+  assert.equal(delegation.mandate.brief.evidenceUrl, "https://www.tiktok.com/@creator/video/7461234567890123456");
   delegation = await service.confirmMandate(delegation.id, {
     approved: true,
     mandateVersion: delegation.mandate.version,
     scopeHash: delegation.mandate.scopeHash,
   });
-  assert.equal(buyer.created[0].input.brief.evidenceUrl, "https://www.instagram.com/reel/DFa1b2C3d4E/");
+  assert.equal(buyer.created[0].input.brief.evidenceUrl, "https://www.tiktok.com/@creator/video/7461234567890123456");
 });
 
-test("each supported channel carries its matching reference into the approved campaign", async () => {
-  const channels = [
-    ["TikTok", "https://www.tiktok.com/@creator/video/7461234567890123456"],
+test("TikTok reference reaches the approved campaign while other platforms fail before interpretation", async () => {
+  const referenceVideoUrl = "https://www.tiktok.com/@creator/video/7461234567890123456";
+  const { service, buyer } = await fixture([extraction({
+    authorizationMode: "confirm_before_purchase",
+    brief: { ...extraction().brief, evidenceUrl: null },
+  })], { allowExternalUrls: false });
+  let delegation = await service.createDelegation({
+    input: {
+      request: "Create an Acme TikTok launch video under a hard cap of 2500 sats.",
+      context: { platform: "TikTok", purchaseMode: "confirm_before_purchase", referenceVideoUrl },
+    },
+    idempotencyKey: "delegation-channel-tiktok",
+  });
+  assert.equal(delegation.mandate.brief.evidenceUrl, referenceVideoUrl);
+  delegation = await service.confirmMandate(delegation.id, {
+    approved: true, mandateVersion: delegation.mandate.version, scopeHash: delegation.mandate.scopeHash,
+  });
+  assert.equal(delegation.state, "awaiting_purchase_confirmation");
+  assert.equal(buyer.created[0].input.brief.evidenceUrl, referenceVideoUrl);
+  assert.equal(buyer.created[0].input.autoExecute, false);
+
+  for (const [platform, url] of [
     ["Instagram Reels", "https://www.instagram.com/reel/DFa1b2C3d4E/"],
     ["YouTube Shorts", "https://www.youtube.com/shorts/dQw4w9WgXcQ"],
-  ];
-  for (const [platform, referenceVideoUrl] of channels) {
-    const { service, buyer } = await fixture([extraction({
-      authorizationMode: "confirm_before_purchase",
-      brief: { ...extraction().brief, evidenceUrl: null },
-    })], { allowExternalUrls: false });
-    let delegation = await service.createDelegation({
+  ]) {
+    await assert.rejects(service.createDelegation({
       input: {
-        request: `Create an Acme launch video for ${platform} under a hard cap of 2500 sats.`,
-        context: { platform, purchaseMode: "confirm_before_purchase", referenceVideoUrl },
+        request: `Create an Acme video for ${platform} under a hard cap of 2500 sats.`,
+        context: { platform, purchaseMode: "confirm_before_purchase", referenceVideoUrl: url },
       },
-      idempotencyKey: `delegation-channel-${platform}`,
-    });
-    assert.equal(delegation.mandate.brief.evidenceUrl, referenceVideoUrl, platform);
-    delegation = await service.confirmMandate(delegation.id, {
-      approved: true, mandateVersion: delegation.mandate.version, scopeHash: delegation.mandate.scopeHash,
-    });
-    assert.equal(delegation.state, "awaiting_purchase_confirmation", platform);
-    assert.equal(buyer.created[0].input.brief.evidenceUrl, referenceVideoUrl, platform);
-    assert.equal(buyer.created[0].input.autoExecute, false, platform);
+      idempotencyKey: `delegation-reject-${platform}`,
+    }), (error) => error.code === "unsupported_reference_video_channel");
   }
 });
 

@@ -13,10 +13,12 @@ test("public Demo allows one safe reference video field and rejects other or uns
     { request: "Create a product launch video", context: { nested: { referenceUrl: "HTTP://example.com/a" } } },
     { request: "Create a product launch video", context: { platform: "TikTok", referenceVideoUrl: "http://127.0.0.1/reference.mp4" } },
     { request: "Create a product launch video", context: { platform: "TikTok", referenceVideoUrl: "https://www.youtube.com/shorts/dQw4w9WgXcQ" } },
+    { request: "Create a product launch video", context: { platform: "Instagram Reels", referenceVideoUrl: "https://www.instagram.com/reel/DFa1b2C3d4E/" } },
+    { request: "Create a product launch video", context: { platform: "YouTube Shorts" } },
   ]) {
     assert.throws(
       () => validatePublicDemoDelegation(input, { maxRequestChars: 1000 }),
-      (error) => ["public_demo_external_url_disabled", "unsafe_external_url", "reference_video_channel_mismatch"].includes(error.code),
+      (error) => ["public_demo_external_url_disabled", "unsafe_external_url", "reference_video_channel_mismatch", "unsupported_reference_video_channel"].includes(error.code),
     );
   }
 });
