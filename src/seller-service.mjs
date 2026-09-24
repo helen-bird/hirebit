@@ -398,6 +398,13 @@ export class SellerService {
       if (order.production.state !== "failed") {
         throw new AppError("production_not_failed", "Only failed production can be retried", 409);
       }
+      if (["google_veo_generation_failed", "google_veo_output_invalid"].includes(order.production.error?.code)) {
+        throw new AppError(
+          "production_review_required",
+          "The Veo operation ended without a usable video; review the input before any new generation",
+          409,
+        );
+      }
       const ambiguousPreBuildError = ["hypit_command_failed", "hypit_timeout", "hypit_spawn_failed"]
         .includes(order.production.error?.code);
       const provenPreBuild = ambiguousPreBuildError

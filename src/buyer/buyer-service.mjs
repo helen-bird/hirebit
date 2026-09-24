@@ -407,6 +407,13 @@ export class BuyerService {
       || reconciled.lastError?.code !== productionError) {
       return reconciled;
     }
+    if (["google_veo_generation_failed", "google_veo_output_invalid"].includes(productionError)) {
+      throw new AppError(
+        "production_review_required",
+        "The Veo operation ended without a usable video; review the input before any new generation",
+        409,
+      );
+    }
     await this.seller.retryProduction(reconciled.sellerOrder.id);
     return await this.syncCampaign(campaignId);
   }

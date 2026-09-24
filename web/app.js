@@ -1161,10 +1161,13 @@ function renderProduction(delegation) {
   const campaign = delegation.campaign;
   const production = campaign.sellerOrder?.production ?? {};
   const isFailed = campaign.state === "fulfillment_failed";
+  const needsProviderReview = isFailed && ["google_veo_generation_failed", "google_veo_output_invalid"]
+    .includes(production.error?.code ?? campaign.lastError?.code);
   const isProducing = !isFailed && production.state === "producing";
   const turnaround = campaign.decision?.selected?.quote?.estimatedTurnaroundMinutes;
   stageContent.append(title(isFailed ? "PRODUCTION PAUSED" : "VIDEO PRODUCTION",
-    isFailed ? "Your video needs another attempt" : isProducing ? "Your campaign is being created" : "Production is getting ready"));
+    needsProviderReview ? "This video needs review" : isFailed ? "Your video needs another attempt"
+      : isProducing ? "Your campaign is being created" : "Production is getting ready"));
   const recap = planRecap(campaign);
   if (recap) stageContent.append(recap);
   const live = node("section", `production-live${isProducing ? " active" : ""}`);
@@ -1174,7 +1177,9 @@ function renderProduction(delegation) {
   const copy = node("div", "production-live-copy");
   copy.append(
     node("h3", "", isFailed ? "We couldn’t finish this attempt" : isProducing ? "Please wait — we’re making your video" : "Your production slot is ready"),
-    node("p", "", isFailed
+    node("p", "", needsProviderReview
+      ? "Google stopped a video scene. Your order and payment authorization are preserved; the input needs review before another generation."
+      : isFailed
       ? "Your existing order and payment are preserved. You can retry production without buying again, or ask for a human review."
       : isProducing
       ? "The reference is being translated into new product action, then assembled and checked by Hypit. This page refreshes automatically."
@@ -1192,20 +1197,25 @@ function renderProduction(delegation) {
   if (!isFailed) stageContent.append(node("p", "production-wait-note", "You can keep this page open or return later. Your campaign continues safely in the background."));
   if (campaign.lastError) {
     const referenceOrder = Boolean(campaign.decision?.selected?.quote?.brief?.evidenceUrl);
-    const message = campaign.lastError.code === "reference_video_fetch_failed"
+    const message = needsProviderReview
+      ? "Repeating this attempt would return the same failed result. Request a review so the next step can be chosen safely."
+      : campaign.lastError.code === "reference_video_fetch_failed"
       || (referenceOrder && campaign.lastError.code === "hypit_command_failed")
       ? "The reference-video source could not be reached. Retry the same order—your payment and selections are preserved."
       : "Production stopped before completion. Retry the same order—your payment and selections are preserved.";
     stageContent.append(node("div", "notice", message));
   }
   if (isFailed) {
-    const retry = node("button", "button confirm", "Retry production · no new payment");
-    retry.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/retry-fulfillment`, {}));
-    const resolution = node("button", "button danger", "Request human resolution");
+    const resolution = node("button", "button danger", needsProviderReview ? "Request a review" : "Request human resolution");
     resolution.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/request-resolution`, {
       reason: "Paid production failed and requires operator review for retry, replacement, or refund handling.",
     }));
-    showActions(resolution, retry);
+    if (needsProviderReview) showActions(resolution);
+    else {
+      const retry = node("button", "button confirm", "Retry production · no new payment");
+      retry.addEventListener("click", () => act(`/v1/delegations/${encodeURIComponent(delegation.id)}/retry-fulfillment`, {}));
+      showActions(resolution, retry);
+    }
   }
 }
 

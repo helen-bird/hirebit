@@ -318,6 +318,11 @@ export class GoogleVeoVideoProvider {
         bytes: bytes.length, durationSeconds: 8, promptSha256, receiptSha256: sha256(await readFile(receiptPath)),
       };
     }
+    if (receipt?.status === "failed") {
+      throw new AppError("google_veo_generation_failed", "Veo generation failed", 502, {
+        error: receipt.providerError ?? null,
+      });
+    }
     while (receipt === null || ["submitting", "submission_uncertain"].includes(receipt.status)) {
       // A receipt written before a crash counts as a possible billed call.
       // Never submit a third time, and never resubmit an identified operation.
@@ -378,7 +383,18 @@ export class GoogleVeoVideoProvider {
       await this.sleepImpl(this.pollIntervalMs);
     }
     if (!result?.done) throw new AppError("google_veo_still_running", "Veo generation is still running and will be resumed", 409);
-    if (result.error) throw new AppError("google_veo_generation_failed", "Veo generation failed", 502, { error: result.error });
+    if (result.error) {
+      receipt.status = "failed";
+      receipt.failedAt = new Date(this.clock()).toISOString();
+      receipt.providerError = {
+        code: result.error.code ?? null,
+        message: typeof result.error.message === "string" ? result.error.message.slice(0, 500) : null,
+      };
+      await writeJsonAtomic(receiptPath, receipt);
+      throw new AppError("google_veo_generation_failed", "Veo generation failed", 502, {
+        error: receipt.providerError,
+      });
+    }
     const bytes = videoBytes(result);
     if (!bytes || bytes.length < 10_000) throw new AppError("google_veo_output_invalid", "Veo returned no usable inline video", 502);
     const temporary = `${outputPath}.tmp-${process.pid}`;

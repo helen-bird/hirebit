@@ -243,6 +243,35 @@ test("Google Veo provider submits two continuous reference segments and reuses t
   assert.ok(lastFrame[centerPixel + 2] > lastFrame[centerPixel] + 80, "closing segment must survive duration matching");
 });
 
+test("a terminal Veo rejection is recorded and never resubmitted or repolled", async () => {
+  const input = await setup("ord_veo_rejected");
+  let submissions = 0;
+  let polls = 0;
+  const provider = new GoogleVeoVideoProvider({
+    projectId: "project-test", enabled: true, commercialUseApproved: true,
+    maxGenerations: 2, ledgerFile: join(input.root, "seller", "veo-ledger.json"),
+    tokenProvider: async () => "private-token", sleepImpl: async () => {}, pollIntervalMs: 0,
+    fetchImpl: async (url) => {
+      if (url.endsWith(":predictLongRunning")) {
+        submissions += 1;
+        return new Response(JSON.stringify({ name: "operations/rejected" }), { status: 200 });
+      }
+      polls += 1;
+      return new Response(JSON.stringify({ done: true, error: {
+        code: 3, message: "Input image violates usage guidelines",
+      } }), { status: 200 });
+    },
+  });
+  await assert.rejects(provider.prepare(input), (error) => error.code === "google_veo_generation_failed");
+  const receiptPath = join(input.jobDir, "veo-inputs", "receipt-1.json");
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+  assert.equal(receipt.status, "failed");
+  assert.deepEqual(receipt.providerError, { code: 3, message: "Input image violates usage guidelines" });
+  await assert.rejects(provider.prepare(input), (error) => error.code === "google_veo_generation_failed");
+  assert.equal(submissions, 1);
+  assert.equal(polls, 1);
+});
+
 test("Seller absorbs at most one ambiguous Veo resubmission per segment", async () => {
   const input = await setup();
   let calls = 0;

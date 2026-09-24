@@ -356,6 +356,35 @@ test("fulfillment retry reconciles a Seller build that completed after Buyer tim
   assert.equal(seller.synced, 1);
 });
 
+test("Buyer refuses a same-order retry after terminal Veo generation failure", async () => {
+  const { service, seller, store } = await fixture();
+  const campaign = await service.createCampaign({
+    input: { objective: "conversion", budgetSats: 3000 },
+    idempotencyKey: "buyer-veo-terminal-failure",
+  });
+  const failedOrder = {
+    id: "order-1", amountSats: 1300, state: "fulfillment_failed",
+    payment: { id: "payment-1", amountSats: "1300", btcAddress: "bc1qmerchant", authorization: "authorized", settlement: "pending" },
+    production: { state: "failed", error: { code: "google_veo_generation_failed", message: "Veo generation failed" } },
+  };
+  await store.transaction((state) => {
+    const current = state.campaigns[campaign.id];
+    current.state = "fulfillment_failed";
+    current.sellerOrder = failedOrder;
+    current.paymentAttempt = {
+      status: "submitted",
+      prepared: { paymentId: "payment-1", validation: { feeSats: 25 } },
+      receipt: { instantReceiptId: "platform-receipt-1" },
+    };
+    current.lastError = { code: "google_veo_generation_failed", message: "Veo generation failed" };
+  });
+  seller.syncOrder = async () => { seller.synced += 1; return failedOrder; };
+  await assert.rejects(service.retryFulfillment(campaign.id), (error) => error.code === "production_review_required");
+  assert.equal(seller.synced, 1);
+  assert.equal(seller.retried, 0);
+  assert.equal(service.getCampaign(campaign.id).state, "fulfillment_failed");
+});
+
 test("delegated purchase confirmation cannot be bypassed through the Campaign endpoint", async () => {
   const { service, seller } = await fixture();
   const campaign = await service.createCampaign({

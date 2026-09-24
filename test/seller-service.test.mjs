@@ -582,6 +582,22 @@ test("legacy producing order without a durable build id fails closed for manual 
   assert.equal(producer.calls, 0);
 });
 
+test("terminal Veo failure cannot be retried as the same paid production", async () => {
+  const { service, payments, producer, quote } = await fixture();
+  const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: "veo-terminal-failure" });
+  await service.store.transaction((state) => {
+    const current = state.orders[order.id];
+    current.payment.authorization = "authorized";
+    current.state = "fulfillment_failed";
+    current.production.state = "failed";
+    current.production.error = { code: "google_veo_generation_failed", message: "Veo generation failed" };
+  });
+  await assert.rejects(service.retryProduction(order.id), (error) => error.code === "production_review_required");
+  assert.equal(service.getOrder(order.id).production.state, "failed");
+  assert.equal(producer.calls, 0);
+  assert.equal(payments.created.length, 1);
+});
+
 test("an ambiguous Hypit submission timeout cannot create a second build on retry", async () => {
   const { service, payments, quote } = await fixture();
   const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: "campaign-hypit-ambiguous-submission" });
