@@ -381,6 +381,12 @@ opt-in paid services, even though `PAYMENT_MODE=demo` never transfers Bitcoin:
    (cd vendor/hypit && corepack pnpm install --frozen-lockfile)
    ```
 
+   The two downloader changes are tracked as [Hirebit patch files](patches/hypit/), not as a new
+   commit in Hypit's upstream repository. `hypit:setup` pins the submodule to the reviewed Hypit
+   commit and applies both patches idempotently. The submodule appearing modified in `git status`
+   after setup is expected; CI runs the same setup before checks and tests. Run setup before
+   building the Hypit worker image.
+
    Review [Hypit's license](vendor/hypit/LICENSE) before redistributing or operating it.
 2. Put `DEEPSEEK_API_KEY` in the ignored `.env`, or store it under macOS Keychain service
    `shared-model-gateway`, account `deepseek-api`. Do not commit or paste the value into an issue.
