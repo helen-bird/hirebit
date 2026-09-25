@@ -33,6 +33,7 @@ exist, but wallet onboarding, mainnet payment and settlement remain unverified l
 - [Find the payment code](#find-the-payment-code)
 - [What it does](#what-it-does)
 - [Product thesis and evidence](#product-thesis-and-evidence)
+- [Roadmap](#roadmap)
 - [Payment modes and validation](#payment-modes-and-validation)
   - [Authorization and settlement](#payment-authorization-is-separate-from-settlement)
 - [System design](#system-design)
@@ -122,10 +123,23 @@ The prototype is intended to validate four open questions:
 - Is Bitcoin the most useful payment rail for machine-to-machine settlement in this workflow?
 - Does buying three hook variants create enough incremental campaign value to justify the added spend?
 
-The six-month validation plan therefore starts with five design partners and measures repeat use,
-decision acceptance, budget utilization, time-to-campaign and output quality. Later milestones test
-10 paid jobs, mainnet settlement, contribution margin and a second capability Seller before making
-broader market or ROI claims.
+## Roadmap
+
+Hirebit starts with product-video procurement, then extends the same bounded Buyer mandate,
+Seller comparison, payment and delivery checks to other digital services. These are ambitious
+targets for the next year, not features already shipped or a forecast of demand.
+
+| Horizon | Target outcome | Evidence required to advance |
+| --- | --- | --- |
+| Month 1 — customer proof | Work with five small-business design partners and complete ten customer-brief-to-delivery jobs. | Measure plan acceptance, repeat requests, budget adherence, time-to-campaign, output quality and actual production cost. A simulated GoBTC authorization is not counted as a Bitcoin transaction. |
+| Month 2 — transaction and supply proof | Target ten customer-paid jobs, validate the first real GoBTC Buyer-to-Seller payment through both instant authorization and later on-chain settlement, and pilot a second Seller capability with a different deliverable. | Reconcile the original payer and fee, document contribution margin, and exercise a safe cancellation, dispute and refund process. If GoBTC or a required authorization is unavailable, keep that milestone open rather than counting a preview as proof. |
+| Months 3–6 — controlled multi-customer beta | Add independent customer identities and order isolation; compare offers from two or three Seller capabilities using fit, price, speed and observed delivery quality. Target 30 paying businesses and 100 cumulative paid jobs. | Verify repeat purchase, positive per-job contribution margin, reliable fulfillment recovery and an auditable refund payout workflow before widening access. |
+| Months 7–12 — agent procurement network | Offer a controlled API for other Buyer agents, expand to three to five Seller capabilities across two or three digital-service categories, and target 100 monthly paying buyers. | Show sustained repeat use, accountable Seller performance, bounded spending and reliable payment and delivery outcomes across categories. |
+
+Moving from the single-operator preview to a hosted multi-customer service also requires written
+Hypit authorization or a suitable commercial license, production-grade customer access controls,
+and verified mainnet and refund operations. The one-year goal is a small, functioning agent-to-agent
+procurement network; product video is its first category, not its final scope.
 
 ## Payment modes and validation
 
