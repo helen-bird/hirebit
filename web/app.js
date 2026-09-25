@@ -564,11 +564,7 @@ function selectionSignals(decision) {
   } else if (profile) {
     signals.push(["FORMAT MATCH", profile.bestFor]);
   }
-  if ((quote?.addOns?.hookVariants ?? 1) > 1) {
-    signals.push(["TESTING VALUE", `${quote.addOns.hookVariants} hooks give the campaign multiple openings to test`]);
-  } else {
-    signals.push(["RIGHT-SIZED", "Buys only the output needed for this brief"]);
-  }
+  signals.push(["INCLUDED OUTPUT", selectedPlanSummary(decision)]);
   const budget = decision.budgetSats;
   const spend = selected.totalAuthorizedSats ?? quote?.amountSats;
   if (Number.isSafeInteger(budget) && Number.isSafeInteger(spend)) {
@@ -592,33 +588,35 @@ function readableObjective(value) {
 function customerDecisionRationale(campaign) {
   const decision = campaign.decision;
   const selected = decision.selected;
-  const profile = packageProfiles[selected.productId] ?? {};
   const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
-  const spend = selected.totalAuthorizedSats ?? selected.quote.amountSats;
-  const remaining = Number.isSafeInteger(budget) ? Math.max(0, budget - spend) : null;
-  const hookCount = selected.scope?.hookVariants ?? selected.quote?.addOns?.hookVariants ?? 1;
-  const hasReferenceVideo = Boolean(campaign.input?.brief?.evidenceUrl
-    ?? campaign.input?.referenceVideoUrl
-    ?? selected.quote?.brief?.evidenceUrl);
-  const parts = [];
-  if (hasReferenceVideo && selected.productId === "proof_demo") {
-    parts.push("Product Showcase is the only offered format that turns your product image and the reference video's action into a product-led demonstration.");
-  } else {
-    parts.push(`${productDisplayName(selected.productId, selected.productName)} is the strongest match for ${readableObjective(decision.objective).toLowerCase()}${profile.outcome ? ` because it delivers ${profile.outcome.toLowerCase()}` : ""}.`);
-  }
-  if (hookCount > 1) {
-    parts.push(`${hookCount} distinct openings give the launch meaningful creative testing.`);
-  }
-  parts.push(`The all-in price is up to ${spend.toLocaleString()} sats, including the payment fee${remaining === null ? "." : `, leaving ${remaining.toLocaleString()} sats available.`}`);
-  const cheaper = decision.tradeoffs?.cheaper;
-  if (cheaper && cheaper.planId !== selected.planId && Number.isSafeInteger(cheaper.totalAuthorizedSats)) {
-    parts.push(`The cheaper ${cheaper.label.toLowerCase()} option saves ${(spend - cheaper.totalAuthorizedSats).toLocaleString()} sats, but removes the extra openings needed to compare hook performance.`);
-  }
-  const broader = decision.tradeoffs?.broader;
-  if (broader?.withinBudget === false) {
-    parts.push(`The larger ${broader.label.toLowerCase()} option costs ${broader.totalAuthorizedSats.toLocaleString()} sats and exceeds your approved spend.`);
+  const spend = selected.totalAuthorizedSats ?? selected.quote?.amountSats;
+  const parts = [recordedDecisionReason(decision)];
+  if (Number.isSafeInteger(spend)) {
+    const remaining = Number.isSafeInteger(budget) ? budget - spend : null;
+    parts.push(`Up to ${spend.toLocaleString()} sats, payment fee included${remaining !== null && remaining >= 0 ? `; ${remaining.toLocaleString()} sats stays available` : ""}.`);
   }
   return parts.join(" ");
+}
+
+function recordedPlanReason(plan, decision) {
+  // Partial advisor failures can leave assessments on plans. Only a completed
+  // semantic decision may present those as the basis for this purchase.
+  if (decision.method !== "deepseek_semantic") return "";
+  const assessment = plan.semanticAssessment;
+  if (!plan.planId || assessment?.planId !== plan.planId || assessment.productId !== plan.productId) return "";
+  return typeof assessment.rationale === "string" ? customerCopy(assessment.rationale).trim() : "";
+}
+
+function recordedDecisionReason(decision) {
+  if (decision.method === "deepseek_semantic") {
+    const rationale = typeof decision.rationale === "string" ? customerCopy(decision.rationale).trim() : "";
+    return rationale || recordedPlanReason(decision.selected, decision)
+      || "This plan was selected, but its original comparison notes are unavailable.";
+  }
+  if (decision.method === "deterministic_fallback") {
+    return "Selected using the campaign's saved fit, quality, cost and speed scores. An AI comparison was not used for this choice.";
+  }
+  return "This plan was selected, but its original comparison notes are unavailable.";
 }
 
 function planLabel(plan) {
@@ -699,38 +697,34 @@ function rejectedPackageItems(rejected, decision, campaign) {
 
 function rankExplanation(plan, decision, campaign) {
   const selected = decision.selected;
-  const spend = plan.totalAuthorizedSats ?? plan.quote?.amountSats ?? 0;
-  const selectedSpend = selected.totalAuthorizedSats ?? selected.quote?.amountSats ?? spend;
-  const hooks = plan.scope?.hookVariants ?? 1;
-  const selectedHooks = selected.scope?.hookVariants ?? 1;
-  const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
-  const deadline = campaign.input?.deadlineMinutes;
-  const turnaround = plan.quote?.estimatedTurnaroundMinutes;
-  const usesReference = Boolean(plan.quote?.brief?.evidenceUrl);
-  if (plan.planId === selected.planId) {
-    const openingValue = hooks === 1
-      ? "one focused opening without buying unnecessary variants"
-      : `${hooks} different openings to test`;
-    const reasons = [usesReference
-      ? `Chosen because it follows your reference action and provides ${openingValue}.`
-      : `Chosen because it offers the strongest overall campaign fit with ${openingValue}.`];
-    if (Number.isSafeInteger(budget)) reasons.push(`It stays ${(budget - spend).toLocaleString()} sats under budget.`);
-    if (Number.isSafeInteger(deadline) && Number.isSafeInteger(turnaround) && deadline > turnaround) {
-      reasons.push(`It also keeps ${deadline - turnaround} minutes of delivery buffer.`);
-    }
-    return reasons.join(" ");
-  }
-  if (plan.productId === selected.productId && hooks < selectedHooks) {
-    return `Lower-cost fallback: it uses the same product-led format and saves ${(selectedSpend - spend).toLocaleString()} sats, but gives only ${hooks} opening${hooks === 1 ? "" : "s"}—so the launch cannot compare which hook performs best.`;
-  }
-  return "This option meets the campaign requirements, but offers less useful creative coverage for the money than the recommendation.";
+  const reason = recordedPlanReason(plan, decision);
+  if (reason) return reason;
+  if (plan.planId === selected.planId) return recordedDecisionReason(decision);
+  return decision.method === "deterministic_fallback"
+    ? "This option met the campaign requirements and was compared using the saved fit, quality, cost and speed scores."
+    : "This option met the campaign requirements. Its original comparison notes are unavailable.";
+}
+
+function tradeoffView(item, campaign) {
+  const decision = campaign.decision;
+  const plan = (decision.plans ?? decision.candidates ?? []).find((candidate) => candidate.planId === item.planId);
+  if (!plan) return { label: customerCopy(item.label), reason: "The original comparison notes for this option are unavailable." };
+  return {
+    label: planLabel(plan),
+    reason: plan.eligible
+      ? rankExplanation(plan, decision, campaign)
+      : (plan.rejections ?? []).map((code) => rejectionExplanation(code, plan, decision, campaign)).join(" ")
+        || "This option did not meet all of the confirmed campaign requirements.",
+  };
 }
 
 function decisionEvidence(campaign) {
   const decision = campaign.decision;
   const plans = decision.plans ?? decision.candidates ?? [];
   const rejected = plans.filter((plan) => !plan.eligible);
-  const eligible = plans.filter((plan) => plan.eligible).sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
+  const eligible = plans.filter((plan) => plan.eligible).sort((left, right) =>
+    Number(right.planId === decision.selected.planId) - Number(left.planId === decision.selected.planId)
+    || (right.score ?? 0) - (left.score ?? 0));
   const budget = decision.budgetSats ?? campaign.authorization?.budgetSats ?? campaign.input?.budgetSats;
   const spend = decision.selected.totalAuthorizedSats ?? decision.selected.quote.amountSats;
   const authority = campaign.authorization?.autoExecute === true
@@ -755,12 +749,9 @@ function decisionEvidence(campaign) {
     const hooks = plan.scope?.hookVariants ?? 1;
     const price = plan.totalAuthorizedSats ?? plan.quote?.amountSats ?? 0;
     const selected = plan.planId === decision.selected.planId;
-    const referenceMatch = plan.quote?.brief?.evidenceUrl ? "Reference action matched · " : "";
     return {
       title: `${index + 1}. ${planLabel(plan)}`,
-      meta: selected
-        ? `${referenceMatch}${hooks} openings to test · ${price.toLocaleString()} sats`
-        : `Same product-led format · ${hooks} opening${hooks === 1 ? " only" : "s"} · ${price.toLocaleString()} sats`,
+      meta: `${selected ? "Recommended · " : "Also eligible · "}${hooks} opening${hooks === 1 ? "" : "s"} · up to ${price.toLocaleString()} sats`,
       detail: rankExplanation(plan, decision, campaign),
     };
   });
@@ -792,16 +783,18 @@ function decisionEvidence(campaign) {
       eyebrow: "HOW THE BEST OPTIONS COMPARED",
       title: decision.method === "deepseek_semantic"
         ? "AI compared campaign value—not simply the lowest price."
-        : "The agent compared campaign fit, quality, cost and speed.",
-      intro: "Only matching options appear here. The strongest overall balance ranks first.",
+        : decision.method === "deterministic_fallback"
+          ? "Saved campaign scores guided this choice."
+          : "The saved purchase comparison.",
+      intro: "The recommendation appears first, followed by other options that met your requirements.",
       items: rankedItems,
     },
     purchase: {
       eyebrow: "WHY THIS PLAN WAS AUTHORIZED",
-      title: `${productDisplayName(decision.selected.productId, decision.selected.productName)} gives the strongest result inside your limit.`,
+      title: `${productDisplayName(decision.selected.productId, decision.selected.productName)} is the selected plan.`,
       intro: concise(customerDecisionRationale(campaign), 280),
       items: [
-        { title: "Selected output", meta: selectedPlanSummary(decision), detail: "The scope gives the campaign useful creative coverage without buying unnecessary output." },
+        { title: "Selected output", meta: selectedPlanSummary(decision), detail: "This is the output scope included in the selected quote." },
         { title: "Final spend", meta: `${spend.toLocaleString()} of ${Number(budget).toLocaleString()} sats`, detail: `${Math.max(0, budget - spend).toLocaleString()} sats stays unspent.` },
         { title: "Protected purchase", meta: "One exact plan, authorized once", detail: "A changed price, recipient or scope requires a fresh decision before anything can proceed." },
       ],
@@ -982,7 +975,7 @@ function renderDecision(delegation, { transient = false } = {}) {
   );
   best.append(bestCopy, node("strong", "best-fit-price", `${(decision.selected.totalAuthorizedSats ?? decision.selected.quote.amountSats).toLocaleString()} sats maximum · fee included`));
   const why = node("div", "selection-proof");
-  why.append(node("span", "selection-proof-label", "WHY THIS PLAN WON"));
+  why.append(node("span", "selection-proof-label", "WHAT YOU'RE BUYING"));
   for (const [label, value] of selectionSignals(decision)) {
     const signal = node("div", "selection-signal");
     signal.append(node("i", "", "✓"), node("span", "", label), node("strong", "", value));
@@ -1016,12 +1009,13 @@ function renderDecision(delegation, { transient = false } = {}) {
   ].filter(([, item]) => item);
   for (const [label, item] of tradeoffItems) {
     const selected = item.planId === decision.selected.planId;
+    const explanation = tradeoffView(item, campaign);
     const card = node("div", `tradeoff-card${selected ? " selected" : ""}${item.withinBudget === false ? " over-budget" : ""}`);
     card.append(
       node("span", "", label),
-      node("strong", "", item.label),
+      node("strong", "", explanation.label),
       node("b", "", `${item.totalAuthorizedSats.toLocaleString()} sats`),
-      node("small", "", item.reason),
+      node("small", "", concise(explanation.reason, 240)),
     );
     tradeoffs.append(card);
   }

@@ -337,12 +337,12 @@ test("later on-chain evidence records settlement and txid without re-running pro
   payments.status = "paid";
   await service.syncOrder(order.id, { awaitProduction: true });
   payments.paidAt = "2026-09-19T01:00:00Z";
-  payments.transactions = [{ txid: "real-chain-txid" }];
+  payments.transactions = [{ txid: "ab".repeat(32) }];
   await service.syncOrder(order.id, { awaitProduction: true });
   const settled = service.getOrder(order.id);
   assert.equal(producer.calls, 1);
   assert.equal(settled.payment.settlement, "settled");
-  assert.deepEqual(settled.payment.txids, ["real-chain-txid"]);
+  assert.deepEqual(settled.payment.txids, ["ab".repeat(32)]);
 });
 
 test("simulated payment cannot claim on-chain settlement even with legacy fields", async () => {
@@ -358,6 +358,50 @@ test("simulated payment cannot claim on-chain settlement even with legacy fields
   assert.equal(synced.payment.settlement, "pending");
   assert.equal(synced.payment.paidAt, null);
   assert.deepEqual(synced.payment.txids, []);
+});
+
+test("malformed settlement evidence stays pending without revoking paid authorization", async (t) => {
+  const validTxid = "ab".repeat(32);
+  const validTime = "2026-09-19T01:00:00Z";
+  const cases = [
+    { paidAt: "not-a-date" }, { paidAt: "" }, { paidAt: 123 },
+    { paidAt: "2026-02-30T01:00:00Z" }, { paidAt: "2026-09-19T24:00:00Z" },
+    { paidAt: "2026-09-19" }, { paidAt: "2026-09-19T01:00:00" },
+    { transactions: [""] }, { transactions: ["not-a-txid"] },
+    { transactions: ["ab".repeat(31)] }, { transactions: ["zz".repeat(32)] },
+    { transactions: [{ txid: "" }] }, { transactions: [null] },
+    { transactions: [validTxid, { txid: "invalid" }] },
+  ];
+  for (const [index, invalid] of cases.entries()) {
+    await t.test(`invalid evidence ${index + 1}`, async () => {
+      const { service, payments, producer, quote } = await fixture();
+      const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: `invalid-settlement-${index}` });
+      Object.assign(payments, { status: "paid", paidAt: validTime, transactions: [validTxid] }, invalid);
+      const pending = await service.syncOrder(order.id, { awaitProduction: true });
+      assert.equal(pending.payment.authorization, "authorized");
+      assert.equal(pending.payment.settlement, "pending");
+      assert.ok(pending.payment.nextCheckAt);
+      assert.equal(producer.calls, 1);
+      assert.equal(service.store.snapshot().audit.filter((item) => item.type === "payment.settled").length, 0);
+      payments.paidAt = validTime;
+      payments.transactions = [validTxid];
+      const corrected = await service.syncOrder(order.id, { awaitProduction: true });
+      assert.equal(corrected.payment.settlement, "settled");
+      assert.equal(producer.calls, 1);
+    });
+  }
+});
+
+test("valid settlement normalizes supported transaction IDs and accepts a timezone timestamp", async () => {
+  const { service, payments, quote } = await fixture();
+  const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: "valid-settlement-formats" });
+  payments.status = "paid";
+  payments.paidAt = "2024-02-29T10:00:00.123+08:00";
+  payments.transactions = ["AB".repeat(32), { txid: "ab".repeat(32) },
+    { txId: "cd".repeat(32) }, { transactionId: "ef".repeat(32) }];
+  const settled = await service.syncOrder(order.id, { awaitProduction: true });
+  assert.equal(settled.payment.settlement, "settled");
+  assert.deepEqual(settled.payment.txids, ["ab".repeat(32), "cd".repeat(32), "ef".repeat(32)]);
 });
 
 test("Seller refuses a paid response for a different payment or amount", async () => {
@@ -389,14 +433,14 @@ test("stale settlement response cannot erase recorded chain evidence", async () 
   const order = await service.createOrder({ quoteId: quote.id, idempotencyKey: "campaign-order-stale-settlement" });
   payments.status = "paid";
   payments.paidAt = "2026-09-19T01:00:00Z";
-  payments.transactions = [{ txid: "settled-txid" }];
+  payments.transactions = [{ txid: "cd".repeat(32) }];
   await service.syncOrder(order.id, { awaitProduction: true });
   payments.paidAt = null;
   payments.transactions = [];
   await assert.rejects(service.syncOrder(order.id), (error) => error.code === "payment_settlement_regressed");
   const preserved = service.getOrder(order.id);
   assert.equal(preserved.payment.settlement, "settled");
-  assert.deepEqual(preserved.payment.txids, ["settled-txid"]);
+  assert.deepEqual(preserved.payment.txids, ["cd".repeat(32)]);
 });
 
 test("a slower unpaid response cannot overwrite concurrently committed paid status", async () => {
@@ -442,7 +486,7 @@ test("a slower unsettled response cannot erase concurrently committed settlement
     }
     return {
       paymentId: order.payment.id, amountSats: order.amountSats, status: "paid",
-      paidAt: "2026-09-19T01:00:00Z", transactions: [{ txid: "concurrent-txid" }],
+      paidAt: "2026-09-19T01:00:00Z", transactions: [{ txid: "ef".repeat(32) }],
     };
   };
   const stale = service.syncOrder(order.id);
@@ -451,7 +495,7 @@ test("a slower unsettled response cannot erase concurrently committed settlement
   release.resolve();
   await assert.rejects(stale, (error) => error.code === "payment_settlement_regressed");
   assert.equal(service.getOrder(order.id).payment.settlement, "settled");
-  assert.deepEqual(service.getOrder(order.id).payment.txids, ["concurrent-txid"]);
+  assert.deepEqual(service.getOrder(order.id).payment.txids, ["ef".repeat(32)]);
 });
 
 test("a Hypit watch timeout retains its build and retry reattaches without a second submission", async () => {

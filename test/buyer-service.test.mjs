@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,10 +61,14 @@ class FakeSeller {
     this.origin = "http://seller.test";
   }
   async health() { return { reachable: true, origin: this.origin }; }
-  async createOrder() {
+  async createOrder(quoteId, idempotencyKey) {
     this.created += 1;
+    this.quoteId = quoteId;
+    this.externalId = `hypit-${createHash("sha256").update(`${idempotencyKey}:${quoteId}`).digest("hex").slice(0, 32)}`;
     return {
       id: "order-1",
+      quoteId: this.quoteId,
+      externalId: this.externalId,
       amountSats: this.orderAmountSats,
       state: "awaiting_payment",
       payment: {
@@ -83,6 +88,8 @@ class FakeSeller {
     if (!this.completed) {
       return {
         id: "order-1",
+        quoteId: this.quoteId,
+        externalId: this.externalId,
         amountSats: this.orderAmountSats,
         state: "awaiting_payment",
         payment: { id: "payment-1", amountSats: String(this.orderAmountSats), btcAddress: "bc1qmerchant", authorization: "pending", settlement: "pending" },
@@ -91,6 +98,8 @@ class FakeSeller {
     }
     return {
       id: "order-1",
+      quoteId: this.quoteId,
+      externalId: this.externalId,
       amountSats: this.orderAmountSats,
       state: "completed",
       payment: { id: "payment-1", amountSats: String(this.orderAmountSats), btcAddress: "bc1qmerchant", authorization: "authorized", settlement: "pending", txids: [] },
@@ -100,6 +109,8 @@ class FakeSeller {
   async requestCancellation() {
     return {
       id: "order-1",
+      quoteId: this.quoteId,
+      externalId: this.externalId,
       amountSats: this.orderAmountSats,
       state: "cancellation_pending",
       payment: { id: "payment-1", amountSats: String(this.orderAmountSats), btcAddress: "bc1qmerchant", status: "initiated", authorization: "pending", settlement: "pending" },
@@ -124,7 +135,7 @@ class FakeWallet {
   async readiness() { return { configured: true }; }
   async preparePayment({ paymentId }) {
     this.prepared += 1;
-    this.onPrepared?.();
+    await this.onPrepared?.();
     return {
       paymentId,
       jobId: "job-1",
@@ -152,7 +163,8 @@ async function fixture(options = {}) {
     wallet,
     decisionEngine: options.decisionEngine ?? new FixedDecision(),
     completer: options.completer ?? null,
-    policy,
+    policy: options.policy ?? policy,
+    policyLoader: options.policyLoader ?? null,
     clock: () => 1_800_000_000_000,
   });
   return { service, seller, wallet, store };
@@ -600,6 +612,7 @@ test("a terminal unpaid Seller status after a Buyer submission receipt keeps the
   const { service, seller, wallet } = await fixture({ completed: false });
   seller.syncOrder = async () => ({
     id: "order-1", amountSats: 1300, state: "payment_expired",
+    quoteId: seller.quoteId, externalId: seller.externalId,
     payment: { id: "payment-1", amountSats: "1300", btcAddress: "bc1qmerchant",
       status: "expired", authorization: "pending", settlement: "pending" },
     production: { state: "locked", result: null },
@@ -626,7 +639,10 @@ test("a cancelled invoice after uncertain submission cannot free the Buyer's all
     cancellation: { state: "cancelled_unpaid", refund: { state: "not_issued", amountSats: null } },
   };
   let polls = 0;
-  seller.syncOrder = async () => { polls += 1; return cancelledOrder; };
+  seller.syncOrder = async () => {
+    polls += 1;
+    return Object.assign(cancelledOrder, { quoteId: seller.quoteId, externalId: seller.externalId });
+  };
   seller.requestCancellation = async () => cancelledOrder;
   const campaign = await service.createCampaign({
     input: { objective: "conversion", budgetSats: 3000, autoExecute: true },
@@ -858,6 +874,73 @@ test("global daily spend policy blocks an otherwise valid autonomous order", asy
   assert.equal(campaign.lastError.code, "daily_spend_limit");
   assert.equal(seller.created, 0);
   assert.equal(wallet.prepared, 0);
+});
+
+test("initial Seller order must bind both the accepted quote and this campaign", async () => {
+  for (const field of ["quoteId", "externalId"]) {
+    const { service, seller, wallet } = await fixture();
+    const original = seller.createOrder.bind(seller);
+    seller.createOrder = async (...args) => ({ ...await original(...args), [field]: "unrelated-same-price-order" });
+    const result = await service.createCampaign({
+      input: { objective: "conversion", budgetSats: 3000, autoExecute: true },
+      idempotencyKey: `buyer-initial-${field}-mismatch`,
+    });
+    assert.equal(result.lastError.code, "seller_order_mismatch");
+    assert.equal(result.spendReservation.status, "uncertain");
+    assert.equal(wallet.prepared, 0);
+    assert.equal(wallet.submitted, 0);
+  }
+});
+
+test("latest account limits are enforced after preparation and blocked attempts can safely retry", async () => {
+  for (const [field, value, code] of [
+    ["maxDailySpendSats", 1324, "daily_spend_limit"],
+    ["maxLifetimeSpendSats", 1324, "lifetime_spend_limit"],
+    ["maxPerOrderSats", 1324, "spend_not_authorized"],
+    ["maxCampaignSats", 1324, "spend_not_authorized"],
+    ["maxPaymentFeeSats", 24, "invalid_fee_allowance"],
+  ]) {
+    let livePolicy = { ...policy };
+    const { service, wallet } = await fixture({ completed: false,
+      policyLoader: async () => livePolicy,
+      onPrepared: () => { livePolicy = { ...livePolicy, [field]: value }; },
+    });
+    const blocked = await service.createCampaign({
+      input: { objective: "conversion", budgetSats: 3000, autoExecute: true },
+      idempotencyKey: `buyer-lowered-${field}`,
+    });
+    assert.equal(blocked.state, "spend_blocked");
+    assert.equal(blocked.lastError.code, code);
+    assert.equal(wallet.submitted, 0);
+    assert.equal(blocked.paymentAttempt, null);
+    assert.equal(blocked.spendReservation, null);
+    livePolicy = { ...policy };
+    wallet.onPrepared = null;
+    await service.executeCampaign(blocked.id);
+    assert.equal(wallet.prepared, 2);
+    assert.equal(wallet.submitted, 1);
+  }
+});
+
+test("submission includes other active reservations exactly once under the latest limit", async () => {
+  for (const cap of [2650, 2649]) {
+    let livePolicy = { ...policy, maxPendingPayments: 2 };
+    const { service, wallet, store } = await fixture({ completed: false,
+      policy: livePolicy, policyLoader: async () => livePolicy });
+    wallet.onPrepared = async () => {
+      await store.transaction((state) => {
+        state.campaigns.other = { id: "other", spendReservation: { status: "uncertain", totalSats: 1325 } };
+      });
+      livePolicy = { ...livePolicy, maxDailySpendSats: cap, maxLifetimeSpendSats: cap };
+    };
+    const result = await service.createCampaign({
+      input: { objective: "conversion", budgetSats: 3000, autoExecute: true },
+      idempotencyKey: `buyer-concurrent-limit-${cap}`,
+    });
+    assert.equal(wallet.submitted, cap === 2650 ? 1 : 0);
+    if (cap === 2649) assert.equal(result.lastError.code, "daily_spend_limit");
+    assert.equal(store.snapshot().campaigns.other.spendReservation.totalSats, 1325);
+  }
 });
 
 test("restart during submission becomes uncertain and never re-broadcasts", async () => {

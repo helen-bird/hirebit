@@ -13,17 +13,30 @@ function audit(state, clock, type, orderId, data = {}) {
 
 function txids(transactions) {
   if (!Array.isArray(transactions)) return [];
-  return [...new Set(transactions.flatMap((item) => {
-    if (typeof item === "string") return [item];
-    const value = item?.txid ?? item?.txId ?? item?.transactionId;
-    return typeof value === "string" && value !== "" ? [value] : [];
-  }))];
+  const values = transactions.map((item) => typeof item === "string"
+    ? item : item?.txid ?? item?.txId ?? item?.transactionId);
+  // Partial/malformed evidence must not make an entire invoice look settled.
+  if (values.some((value) => typeof value !== "string" || !/^[a-f\d]{64}$/iu.test(value))) return [];
+  return [...new Set(values.map((value) => value.toLowerCase()))];
+}
+
+function settlementTimestamp(value) {
+  if (typeof value !== "string") return null;
+  const parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.exec(value);
+  if (parts === null || !Number.isFinite(Date.parse(value))) return null;
+  const [, year, month, day, hour, minute, second] = parts.map(Number);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  // Date.parse normalizes impossible dates such as February 30 and 24:00.
+  if (month < 1 || month > 12 || day < 1 || day > days[month - 1]
+    || hour > 23 || minute > 59 || second > 59) return null;
+  return value;
 }
 
 function paymentView(payment) {
   const simulated = payment.simulated === true;
   const chainTxids = simulated ? [] : txids(payment.transactions);
-  const paidAt = simulated ? null : (payment.paidAt ?? null);
+  const paidAt = simulated ? null : settlementTimestamp(payment.paidAt);
   const view = {
     id: payment.paymentId,
     status: payment.status,

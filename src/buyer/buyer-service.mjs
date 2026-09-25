@@ -85,6 +85,11 @@ function exceedsConfiguredLimit(amountSats, limitSats) {
 }
 
 function validateSellerOrder(order, quote, campaign, policy, now) {
+  const orderKey = `buyer-${campaign.id}-${quote.id}`;
+  const expectedExternalId = `hypit-${createHash("sha256").update(`${orderKey}:${quote.id}`).digest("hex").slice(0, 32)}`;
+  if (order?.quoteId !== quote.id || order?.externalId !== expectedExternalId) {
+    throw new AppError("seller_order_mismatch", "Seller order does not belong to the accepted quote and campaign", 502);
+  }
   if (!Number.isSafeInteger(order?.amountSats) || order.amountSats <= 0) {
     throw new AppError("seller_order_invalid", "Seller returned an invalid order amount", 502);
   }
@@ -790,6 +795,7 @@ export class BuyerService {
     }
     const quote = campaign.decision?.selected?.quote;
     if (quote === undefined) throw new AppError("decision_missing", "Campaign has no selected quote", 409);
+    await this.#currentPolicy();
     if ((this.paymentFeeReserveSats ?? 0) > 0
       && (!Number.isSafeInteger(quote.sellerFeeAllowanceSats)
         || quote.customerPriceSats !== quote.amountSats + quote.sellerFeeAllowanceSats)) {
@@ -965,36 +971,47 @@ export class BuyerService {
     campaign = this.getCampaign(campaignId);
     if (CANCELLATION_STATES.has(campaign.state)) return await this.cancelCampaign(campaignId);
     const prepared = this.store.snapshot().campaigns[campaignId].paymentAttempt.prepared;
+    let canSubmit;
     try {
-      await this.#assertPaymentsEnabled();
+      canSubmit = await this.store.transaction(async (state) => {
+        const current = state.campaigns[campaignId];
+        if (CANCELLATION_STATES.has(current.state)) return false;
+        const policy = await this.#currentPolicy();
+        const feeSats = Number(prepared.validation?.feeSats ?? 0);
+        const totalSats = current.sellerOrder.amountSats + feeSats;
+        if (!Number.isSafeInteger(feeSats) || feeSats < 0 || feeSats > policy.maxPaymentFeeSats) {
+          throw new AppError("invalid_fee_allowance", "Prepared network fee exceeds the current Buyer policy", 403);
+        }
+        this.#assertSpendPolicy(state, current, policy, totalSats);
+        if (current.input.authorizationMode === "confirm_before_purchase"
+          && (!current.authorization.purchaseConfirmedAt
+            || current.authorization.purchaseSelectionDigest !== purchaseSelectionDigest(current))) {
+          throw new AppError("purchase_confirmation_stale", "Review the current offer before confirming purchase", 409);
+        }
+        current.state = "submitting_payment";
+        current.paymentAttempt.status = "submitting";
+        current.spendReservation = { ...current.spendReservation, amountSats: current.sellerOrder.amountSats,
+          feeSats, totalSats, status: "submitting" };
+        current.paymentAttempt.submissionStartedAt = nowIso(this.clock);
+        current.updatedAt = nowIso(this.clock);
+        return true;
+      });
     } catch (error) {
       await this.store.transaction((state) => {
         const current = state.campaigns[campaignId];
         if (CANCELLATION_STATES.has(current.state)) return;
         current.state = "spend_blocked";
         current.spendReservation = null;
-        discardSignedPsbt(current);
+        const signedPsbtSha256 = discardSignedPsbt(current);
+        // This attempt never reached the submission gate. A later authorized
+        // retry must prepare afresh, not submit the discarded signing material.
+        current.paymentAttempt = null;
         current.lastError = errorView(error, this.clock);
         current.updatedAt = nowIso(this.clock);
-        audit(state, this.clock, "payment.spend_blocked", campaignId, { code: current.lastError.code });
+        audit(state, this.clock, "payment.spend_blocked", campaignId, { code: current.lastError.code, signedPsbtSha256 });
       });
       return this.getCampaign(campaignId);
     }
-    const canSubmit = await this.store.transaction((state) => {
-      const current = state.campaigns[campaignId];
-      if (CANCELLATION_STATES.has(current.state)) return false;
-      current.state = "submitting_payment";
-      current.paymentAttempt.status = "submitting";
-      current.spendReservation ??= {
-        amountSats: current.sellerOrder.amountSats,
-        feeSats: Number(prepared.validation?.feeSats ?? 0),
-        totalSats: current.sellerOrder.amountSats + Number(prepared.validation?.feeSats ?? 0),
-      };
-      current.spendReservation.status = "submitting";
-      current.paymentAttempt.submissionStartedAt = nowIso(this.clock);
-      current.updatedAt = nowIso(this.clock);
-      return true;
-    });
     if (!canSubmit) return await this.cancelCampaign(campaignId);
     try {
       const receipt = await this.wallet.submitPrepared(prepared);
@@ -1088,6 +1105,39 @@ export class BuyerService {
     })().finally(() => this.completionTasks.delete(campaignId));
     this.completionTasks.set(campaignId, task);
     return task;
+  }
+
+  #assertSpendPolicy(state, campaign, policy, totalSats) {
+    if (policy.paymentsEnabled === false) {
+      throw new AppError("payments_disabled", "Buyer payment execution is disabled by policy", 503);
+    }
+    const quote = campaign.decision?.selected?.quote;
+    if (!Number.isSafeInteger(totalSats) || totalSats <= 0
+      || totalSats > campaign.authorization.budgetSats
+      || (quote?.customerPriceSats != null && totalSats > quote.customerPriceSats)
+      || exceedsConfiguredLimit(totalSats, policy.maxPerOrderSats)
+      || exceedsConfiguredLimit(totalSats, policy.maxCampaignSats)) {
+      throw new AppError("spend_not_authorized", "Payment exceeds the current budget or Buyer policy", 403);
+    }
+    const otherReservations = Object.values(state.campaigns)
+      .filter((item) => item.id !== campaign.id && activeReservation(item.spendReservation));
+    const reservedSats = otherReservations.reduce((total, item) => total + reservationTotal(item.spendReservation), 0);
+    const windowStart = this.clock() - 24 * 60 * 60 * 1000;
+    const authorized = state.audit.filter((event) => event.type === "payment.authorized");
+    const debit = (event) => Number(event.data?.totalDebitSats ?? event.data?.amountSats ?? 0);
+    const dailySpent = authorized.filter((event) => Date.parse(event.at) >= windowStart)
+      .reduce((total, event) => total + debit(event), 0);
+    const lifetimeSpent = authorized.reduce((total, event) => total + debit(event), 0);
+    if (dailySpent + reservedSats + totalSats > (policy.maxDailySpendSats ?? policy.maxCampaignSats)) {
+      throw new AppError("daily_spend_limit", "Buyer daily spend limit would be exceeded", 403);
+    }
+    if (Number.isSafeInteger(policy.maxLifetimeSpendSats)
+      && lifetimeSpent + reservedSats + totalSats > policy.maxLifetimeSpendSats) {
+      throw new AppError("lifetime_spend_limit", "Buyer lifetime wallet allocation would be exceeded", 403);
+    }
+    if (otherReservations.length >= (policy.maxPendingPayments ?? 1)) {
+      throw new AppError("pending_payment_limit", "Buyer already has the maximum number of pending payments", 409);
+    }
   }
 
   async #reserveSpend(campaignId, amountSats, quoteFeeReserveSats) {

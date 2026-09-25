@@ -281,7 +281,7 @@ the plans in stages:
 | Understand (`Interpret`) | Validates the schema and preserves authoritative UI choices | Extracts objective, audience, creative requirements, budget, deadline and authority | Versioned mandate |
 | Compare (`Enumerate`) | Requests Seller catalog and quotes for every feasible package × scope combination | None; prices and capabilities come only from the Seller | Comparable plan matrix |
 | Protect (`Filter`) | Rejects capability, format, deadline and customer-budget violations | Cannot restore an ineligible plan | Eligible plan set with rejection reasons |
-| Recommend (`Rank`) | Supplies only eligible plans and bounded decision factors | Assesses objective fit, creative fit, evidence quality and testing value | Ranked plans and concise rationale |
+| Recommend (`Rank`) | Supplies only eligible plans and bounded decision factors | Assesses objective fit, creative fit, evidence quality and testing value | Ranked plans and saved per-plan rationale, shown in the Console alongside quote-derived prices and scope |
 | Purchase (`Select`) | Verifies the returned plan ID and recomputes all monetary checks | Chooses the best-value plan that materially advances the objective | Selected plan plus cheaper and broader trade-offs |
 
 This ordering is the key design choice: AI contributes semantic judgment where rules are brittle, but

@@ -25,7 +25,7 @@ provider-confirmed terminal status for the original invoice before a new quote/o
 | Payment outcome is uncertain | Keep the spend reservation, reconcile the original GoBTC payment, never blindly resubmit | Human intervention remains necessary if provider evidence conflicts or is unavailable |
 | Invoice is `paid` without a matching Buyer submission receipt | Pause Buyer accounting **and block further payment attempts** while reviewing who funded the invoice | The Seller may have received outside-wallet funds; `paid` alone cannot establish a debit from this Buyer or identify the proper refund owner |
 | Invoice creation response is lost, then the idempotent retry returns an already-paid invoice | Link the existing Seller order but pause Buyer signing and accounting for payer-source review | The original payment may be external or an earlier uncertain Buyer submission; no second invoice or signature is attempted |
-| GoBTC later reports chain settlement | Add `paidAt` and transaction IDs; do not charge or produce again | Provider settlement evidence is not an independent chain audit |
+| GoBTC later reports chain settlement | Validate the timezone-qualified `paidAt` and 64-hex transaction IDs before recording settlement; do not charge or produce again | Malformed evidence stays pending; valid provider settlement evidence is not an independent chain audit |
 
 The Seller stop request and production claim use the same durable transaction, so only one can
 win the pre-start race. The Buyer checks cancellation again at the final submit gate, after

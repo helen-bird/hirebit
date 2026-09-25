@@ -46,25 +46,22 @@ export async function reserveSellerProviderAttempt({ path, identity, uncertainCo
   }
 }
 
-export async function withSellerOperationLock({ path, uncertainCode }, work) {
-  const lockPath = `${path}.active`;
+async function withExclusiveFileLock({ lockPath, uncertainCode, recoveryDepth = 0 }, work) {
+  if (recoveryDepth > 16) {
+    throw new AppError(uncertainCode, "Seller production lock recovery chain is too deep; do not start another supplier call", 503);
+  }
   const recoveryPath = `${lockPath}.recovery`;
   const owner = { pid: process.pid, token: randomUUID(), startedAt: new Date().toISOString() };
   for (let tries = 0; tries < 3; tries += 1) {
     try {
       await writeFile(lockPath, `${JSON.stringify(owner)}\n`, { mode: 0o600, flag: "wx" });
-      try { return await work(); } finally {
-        let current;
-        try { current = JSON.parse(await readFile(lockPath, "utf8")); } catch { current = null; }
-        if (current?.token === owner.token) await unlink(lockPath);
-      }
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       let current;
       try { current = JSON.parse(await readFile(lockPath, "utf8")); } catch {
         throw new AppError(uncertainCode, "Seller production lock is invalid; do not start another supplier call", 503);
       }
-      if (!Number.isSafeInteger(current.pid) || current.pid <= 0 || typeof current.token !== "string") {
+      if (!Number.isSafeInteger(current?.pid) || current.pid <= 0 || typeof current.token !== "string" || current.token === "") {
         throw new AppError(uncertainCode, "Seller production lock is invalid; do not start another supplier call", 503);
       }
       try {
@@ -73,17 +70,11 @@ export async function withSellerOperationLock({ path, uncertainCode }, work) {
       } catch (probeError) {
         if (probeError?.code !== "ESRCH") throw probeError;
       }
-      // A separate exclusive recovery claim prevents two workers from moving
-      // the same stale lock, or one worker from moving a newer live lock.
-      let recoveryOwned = false;
-      try {
-        await writeFile(recoveryPath, `${JSON.stringify(owner)}\n`, { mode: 0o600, flag: "wx" });
-        recoveryOwned = true;
-      } catch (recoveryError) {
-        if (recoveryError?.code !== "EEXIST") throw recoveryError;
-        throw new AppError(uncertainCode, "Another Seller worker is recovering this supplier operation", 503);
-      }
-      try {
+      // Recovery claims use the same ownership protocol. If a recovery worker
+      // itself crashes, its dead claim can be recovered under another exclusive
+      // guard. Never unlink an orphan claim without this guard: two reclaimers
+      // could otherwise remove each other's newly acquired lock.
+      await withExclusiveFileLock({ lockPath: recoveryPath, uncertainCode, recoveryDepth: recoveryDepth + 1 }, async () => {
         let latest;
         try { latest = JSON.parse(await readFile(lockPath, "utf8")); } catch (readError) {
           if (readError?.code !== "ENOENT") {
@@ -95,12 +86,22 @@ export async function withSellerOperationLock({ path, uncertainCode }, work) {
             if (renameError?.code !== "ENOENT") throw renameError;
           }
         }
-      } finally {
-        if (recoveryOwned) await unlink(recoveryPath);
-      }
+      });
+      continue;
+    }
+    // Only lock creation belongs to the EEXIST handler above. A supplier or
+    // finalizer throwing EEXIST must propagate without re-entering recovery.
+    try { return await work(); } finally {
+      let current;
+      try { current = JSON.parse(await readFile(lockPath, "utf8")); } catch { current = null; }
+      if (current?.token === owner.token) await unlink(lockPath);
     }
   }
   throw new AppError(uncertainCode, "Could not exclusively claim Seller supplier operation", 503);
+}
+
+export async function withSellerOperationLock({ path, uncertainCode }, work) {
+  return await withExclusiveFileLock({ lockPath: `${path}.active`, uncertainCode }, work);
 }
 
 export async function callSellerProviderTwice({ path, identity, uncertainCode, beforeCall, call, finalize = (value) => value }) {
