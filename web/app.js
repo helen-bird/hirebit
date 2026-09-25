@@ -1,3 +1,5 @@
+import { paymentStatusView } from "./payment-status.js";
+
 const $ = (selector) => document.querySelector(selector);
 const stageContent = $("#stage-content");
 const actionBar = $("#action-bar");
@@ -12,6 +14,7 @@ let workspacePhase = "brief";
 let briefShare = 0.76;
 let reusableReferenceUploadId = null;
 let previewObjectUrl = null;
+let demoPaymentMode = null;
 const selectedDecisionSteps = new Map();
 const selectedDecisionPages = new Map();
 const RESUMABLE_DELEGATION_KEY = "unfinishedDelegationId";
@@ -276,6 +279,23 @@ function updateStages(delegation, forcedStage = null) {
     item.classList.toggle("done", index < current || (delegation.state === "completed" && index <= current));
     item.classList.toggle("active", index === current && delegation.state !== "completed");
   });
+}
+
+function updatePaymentStatus(delegation) {
+  const panel = $("#payment-status");
+  const view = paymentStatusView(delegation, demoPaymentMode);
+  panel.classList.toggle("hidden", view === null);
+  if (!view) return;
+  const heading = node("div", "payment-status-heading");
+  heading.append(node("strong", "", "WHERE THE MONEY IS"), node("span", "payment-status-mode", view.mode));
+  const steps = node("div", "payment-status-steps");
+  for (const step of view.steps) {
+    const item = node("div", `payment-status-step ${step.state}`);
+    item.append(node("small", "", step.label), node("strong", "", step.value));
+    steps.append(item);
+  }
+  panel.replaceChildren(heading, steps, node("p", "payment-status-location", view.location));
+  if (view.note) panel.append(node("p", "payment-status-note", view.note));
 }
 
 function renderComparisonProgress(delegation) {
@@ -1440,6 +1460,7 @@ function render(delegation) {
   actionBar.classList.add("hidden");
   stageContent.className = "stage-content";
   updateStages(delegation);
+  updatePaymentStatus(delegation);
   if (delegation.state === "declined") renderDeclined(delegation);
   else if (["cancelled", "cancellation_pending", "refund_review_required", "cost_review_required"].includes(delegation.state)) renderCancellation(delegation);
   else if (delegation.state === "clarification_required") renderQuestions(delegation);
@@ -1528,20 +1549,26 @@ async function loadRecent() {
 
 function schedulePoll(delegation) {
   clearTimeout(pollTimer);
+  const payment = delegation.campaign?.sellerOrder?.payment;
+  const awaitingRealSettlement = delegation.state === "completed"
+    && payment?.simulated === false && payment.settlement !== "settled";
   const watchingCancelledOrder = delegation.state === "cancelled"
     && delegation.campaign?.sellerOrder && delegation.campaign?.cancellation?.requestedAt
     && Date.now() < Date.parse(delegation.campaign.cancellation.requestedAt) + 7 * 24 * 60 * 60 * 1000;
-  if (["completed", "refund_review_required", "cost_review_required", "payment_origin_review_required", "declined", "clarification_required", "approval_required", "awaiting_purchase_confirmation", "advisory_ready", "execution_paused", "interpretation_failed", "campaign_failed", "campaign_creation_failed"].includes(delegation.state)
+  if ((delegation.state === "completed" && !awaitingRealSettlement)
+    || ["refund_review_required", "cost_review_required", "payment_origin_review_required", "declined", "clarification_required", "approval_required", "awaiting_purchase_confirmation", "advisory_ready", "execution_paused", "interpretation_failed", "campaign_failed", "campaign_creation_failed"].includes(delegation.state)
     || (delegation.state === "cancelled" && !watchingCancelledOrder)) return;
   pollTimer = setTimeout(async () => {
     try {
-      const next = delegation.campaignId
+      const next = awaitingRealSettlement
+        ? await api(`/v1/delegations/${encodeURIComponent(delegation.id)}`)
+        : delegation.campaignId
         ? await api(`/v1/delegations/${encodeURIComponent(delegation.id)}/sync`, { method: "POST", body: "{}" })
         : await api(`/v1/delegations/${encodeURIComponent(delegation.id)}`);
       render(next);
       await loadRecent();
     } catch { schedulePoll(delegation); }
-  }, 3500);
+  }, awaitingRealSettlement ? 60_000 : 3500);
 }
 
 async function readiness() {
@@ -1549,6 +1576,9 @@ async function readiness() {
     const status = await api("/ready", { acceptStatuses: [503] });
     const box = $("#readiness");
     const simulated = status.buyer?.wallet?.simulated === true;
+    demoPaymentMode = typeof status.buyer?.wallet?.simulated === "boolean"
+      ? status.buyer.wallet.simulated : null;
+    if (active) updatePaymentStatus(active);
     if (box) {
       box.classList.toggle("degraded", !status.ready);
       box.querySelector("span:last-child").textContent = status.ready
