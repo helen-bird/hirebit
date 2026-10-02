@@ -1,11 +1,16 @@
 # Restricted public-demo deployment
 
+This is a historical deployment guide. The public interactive demo was retired after the
+hackathon in October 2026. Its Pages endpoint now returns HTTP 410 rather than forwarding
+requests to the local Buyer. The local supervisor and its Buyer, Seller and tunnel processes
+were stopped; the repository and private order data were retained.
+
 For the supervised one-week Mac deployment, see [Local hosting operations](LOCAL_WEEK_HOSTING.md).
 It adds bounded keep-awake, process recovery, health checks and private state snapshots.
 A fixed named tunnel requires a Cloudflare-managed domain. The local operations guide records the
 completed migration and its remaining single-Mac limits; a Quick Tunnel is not an uptime plan.
-The current Hirebit deployment completed its named-tunnel cutover on 2026-09-23; its Pages entry
-URL is unchanged, and the old temporary tunnel is stopped.
+The Hirebit deployment completed its named-tunnel cutover on 2026-09-23; its Pages entry
+URL stayed unchanged until retirement, and the old temporary tunnel was stopped.
 
 The deployment places a Cloudflare Pages Worker in front of an outbound tunnel:
 

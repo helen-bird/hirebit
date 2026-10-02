@@ -1,5 +1,11 @@
 # One-week local hosting
 
+This hosting arrangement was retired in October 2026 after the hackathon. The Pages entry
+now returns HTTP 410, the Hirebit supervisor was stopped, and its LaunchAgent plist was moved
+to the ignored `.local-ops/` directory to prevent automatic restart at login. The local order
+data, ledgers, media, private configuration and GitHub repository were not deleted. The steps
+below remain as a historical operations record, not instructions for a currently running site.
+
 This is a lower-cost, single-Mac deployment, **not a seven-day uptime guarantee**.
 The Mac must stay plugged in, open, connected to a stable network, and logged in.
 Screen locking is safe; logging out, manual sleep, shutdown, closing the lid, or a network outage

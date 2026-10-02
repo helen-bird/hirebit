@@ -22,10 +22,11 @@ to the payment, so the Seller starts this bounded job, although `paidAt` can sti
 `transactions[]` empty. BTC reaches the Seller only after later batched on-chain settlement. See the
 [official guide](https://pioneers.agnic.ai/build/bitcoin-pay) and [payment lifecycle](docs/PAYMENT_LIFECYCLE.md).
 
-**Built and verified.** The [live demo](https://sats-story-hirebit.pages.dev/console/) exercises
-the Buyer decision, budget controls and real video-production path; successful jobs are delivered.
-GoBTC responses are simulated there: **no BTC moves**. Real GoBTC clients and local PSBT signing
-exist, but wallet onboarding, mainnet payment and settlement remain unverified live.
+**Built and verified during the hackathon.** The [demo runbook](docs/DEMO_RUNBOOK.md) records
+the Buyer decision, budget controls and video-production path. The public interactive demo was
+retired after the event in October 2026; this repository remains available for review. Its GoBTC
+responses were simulated: **no BTC moved**. Real GoBTC clients and local PSBT signing exist, but
+wallet onboarding, mainnet payment and settlement were not verified live.
 
 ## Contents
 
